@@ -138,9 +138,25 @@ def load_prompt():
         return f.read()
 
 
+def get_progress_path():
+    """Return the path to progress.md inside the workspace."""
+    return os.path.join(WORKSPACE, "progress.md")
+
+
+def init_progress():
+    """Create progress.md in workspace with all tasks marked TODO if it doesn't exist."""
+    os.makedirs(WORKSPACE, exist_ok=True)
+    progress_path = get_progress_path()
+    if not os.path.isfile(progress_path):
+        lines = [f"- [TODO] {TASK_DESCRIPTIONS[i]}\n" for i in range(1, 5)]
+        with open(progress_path, "w") as f:
+            f.writelines(lines)
+        print(f"[init] Created {progress_path}")
+
+
 def find_next_task():
     """Find the first task marked [TODO] in progress.md. Returns task number or None."""
-    with open("progress.md") as f:
+    with open(get_progress_path()) as f:
         content = f.read()
     for task_num in range(1, 5):
         if f"[TODO] Task {task_num}:" in content:
@@ -150,7 +166,7 @@ def find_next_task():
 
 def all_done():
     """Check if all tasks are marked DONE."""
-    with open("progress.md") as f:
+    with open(get_progress_path()) as f:
         content = f.read()
     return all(f"[DONE] Task {i}:" in content for i in range(1, 5))
 
@@ -206,7 +222,8 @@ def run_pytest_for_task(task_num):
 
 def update_progress(task_num, passed):
     """Update progress.md for a single task."""
-    with open("progress.md") as f:
+    progress_path = get_progress_path()
+    with open(progress_path) as f:
         lines = f.readlines()
 
     desc = TASK_DESCRIPTIONS[task_num]
@@ -217,12 +234,15 @@ def update_progress(task_num, passed):
         else:
             new_lines.append(line)
 
-    with open("progress.md", "w") as f:
+    with open(progress_path, "w") as f:
         f.writelines(new_lines)
 
 
 def main():
     client = Client()
+
+    # Ensure progress.md exists in workspace
+    init_progress()
 
     # Step 1: Find the next task to work on
     task_num = find_next_task()
@@ -242,7 +262,7 @@ def main():
 
     # Step 4: Update progress
     update_progress(task_num, passed)
-    with open("progress.md") as f:
+    with open(get_progress_path()) as f:
         print(f.read())
 
     if passed:
@@ -331,7 +351,7 @@ Respond in JSON:
         print(f"\n=== Re-running pytest for Task {task_num} ===")
         passed = run_pytest_for_task(task_num)
         update_progress(task_num, passed)
-        with open("progress.md") as f:
+        with open(get_progress_path()) as f:
             print(f.read())
 
         if passed:

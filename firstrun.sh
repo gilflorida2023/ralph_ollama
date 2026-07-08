@@ -1,15 +1,17 @@
+#!/bin/bash
 rm -rf workspace/
 
 if ! [ -d venv/ ]
 then
-	python3 -m venv
+	python3 -m venv venv
 fi
 source venv/bin/activate
 pip install -r requirements.txt
 
 # Run once (bootstrap + validate)
-python3 agent.py
+python agent.py
 
-# Run in loop mode default is 5
+# Run in loop mode default is 50
+# Equivalent to ./ralph.sh 50
 ./ralph.sh
 
