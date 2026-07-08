@@ -7,10 +7,6 @@ from ollama import Client
 
 WORKSPACE = "workspace"
 
-# ── Bootstrap templates ──────────────────────────────────────────────
-# Each task has a function template and a test template.
-# On first run, these are written to workspace/ so pytest can validate.
-
 TASK_TEMPLATES = {
     1: {
         "func": '''import subprocess
@@ -21,7 +17,6 @@ def clone_repo():
     workspace = os.path.abspath(os.path.dirname(__file__))
     target = os.path.join(workspace, "simplesieve")
     if os.path.isdir(target):
-        # Already cloned
         class Result:
             returncode = 0
             stderr = ""
@@ -106,7 +101,6 @@ def count_primes():
     )
     if result.returncode != 0:
         raise RuntimeError(f"simplesieve failed: {result.stderr}")
-    # -c flag prints count to stderr
     output = result.stderr.strip() if result.stderr.strip() else result.stdout.strip()
     return output
 ''',
@@ -122,98 +116,14 @@ def test_count_primes():
     },
 }
 
-_TEST_MAP = {
-    1: "test_clone_repo",
-    2: "test_get_project_dir",
-    3: "test_build_program",
-    4: "test_count_primes",
+FUNC_NAMES = {1: "clone_repo", 2: "get_project_dir", 3: "build_program", 4: "count_primes"}
+_TEST_MAP = {1: "test_clone_repo", 2: "test_get_project_dir", 3: "test_build_program", 4: "test_count_primes"}
+TASK_DESCRIPTIONS = {
+    1: "Task 1: Clone repository",
+    2: "Task 2: Navigate to project directory",
+    3: "Task 3: Build the program",
+    4: "Task 4: Count primes in first 1,000,000 natural numbers",
 }
-
-
-def bootstrap_files():
-    """Create tasks.py and test_tasks.py from templates if they don't exist,
-    or append the next task's function/test if they do exist but are incomplete."""
-    os.makedirs(WORKSPACE, exist_ok=True)
-    tasks_py = os.path.join(WORKSPACE, "tasks.py")
-    test_py = os.path.join(WORKSPACE, "test_tasks.py")
-
-    # Read existing content
-    existing_tasks = ""
-    existing_tests = ""
-    if os.path.isfile(tasks_py):
-        with open(tasks_py) as f:
-            existing_tasks = f.read()
-    if os.path.isfile(test_py):
-        with open(test_py) as f:
-            existing_tests = f.read()
-
-    # Find which tasks are already present
-    for task_num in range(1, 5):
-        func_marker = f"def {['clone_repo', 'get_project_dir', 'build_program', 'count_primes'][task_num-1]}("
-        test_marker = f"def {_TEST_MAP[task_num]}("
-        if func_marker not in existing_tasks:
-            with open(tasks_py, "a") as f:
-                f.write(f"\n\n{TASK_TEMPLATES[task_num]['func']}")
-            print(f"[bootstrap] Added function for Task {task_num} to tasks.py")
-        if test_marker not in existing_tests:
-            with open(test_py, "a") as f:
-                f.write(f"\n\n{TASK_TEMPLATES[task_num]['test']}")
-            print(f"[bootstrap] Added test for Task {task_num} to test_tasks.py")
-
-
-def run_pytest():
-    """Run all pytest tests and return results."""
-    test_file = os.path.join(WORKSPACE, "test_tasks.py")
-    if not os.path.isfile(test_file):
-        return {}
-    try:
-        result = subprocess.run(
-            [sys.executable, "-m", "pytest", test_file, "-v", "--tb=short"],
-            capture_output=True, text=True, timeout=120
-        )
-        print(result.stdout)
-        if result.stderr:
-            print(result.stderr, file=sys.stderr)
-        
-        # Parse which tests passed
-        passed = {}
-        for task_num, test_name in _TEST_MAP.items():
-            passed[task_num] = f"{test_name} PASSED" in result.stdout
-        return passed
-    except Exception as e:
-        print(f"Pytest error: {e}", file=sys.stderr)
-        return {}
-
-
-def update_progress(test_results):
-    """Update progress.md based on pytest results."""
-    progress_file = "progress.md"
-    with open(progress_file) as f:
-        lines = f.readlines()
-
-    task_descriptions = {
-        1: "Task 1: Clone repository",
-        2: "Task 2: Navigate to project directory",
-        3: "Task 3: Build the program",
-        4: "Task 4: Count primes in first 1,000,000 natural numbers",
-    }
-
-    new_lines = []
-    for line in lines:
-        updated = False
-        for task_num, desc in task_descriptions.items():
-            if desc in line:
-                if test_results.get(task_num, False):
-                    new_lines.append(f"- [DONE] {desc}\n")
-                else:
-                    new_lines.append(f"- [TODO] {desc}\n")
-                updated = True
-                break
-        if not updated:
-            new_lines.append(line)
-
-    with open(progress_file, "w") as f:
-        f.writelines(new_lines)
 
 
 def load_prompt():
@@ -228,6 +138,16 @@ def load_prompt():
         return f.read()
 
 
+def find_next_task():
+    """Find the first task marked [TODO] in progress.md. Returns task number or None."""
+    with open("progress.md") as f:
+        content = f.read()
+    for task_num in range(1, 5):
+        if f"[TODO] Task {task_num}:" in content:
+            return task_num
+    return None
+
+
 def all_done():
     """Check if all tasks are marked DONE."""
     with open("progress.md") as f:
@@ -235,50 +155,116 @@ def all_done():
     return all(f"[DONE] Task {i}:" in content for i in range(1, 5))
 
 
+def bootstrap_next_task(task_num):
+    """Add the function and test for a single task to workspace files."""
+    os.makedirs(WORKSPACE, exist_ok=True)
+    tasks_py = os.path.join(WORKSPACE, "tasks.py")
+    test_py = os.path.join(WORKSPACE, "test_tasks.py")
+
+    existing_tasks = ""
+    existing_tests = ""
+    if os.path.isfile(tasks_py):
+        with open(tasks_py) as f:
+            existing_tasks = f.read()
+    if os.path.isfile(test_py):
+        with open(test_py) as f:
+            existing_tests = f.read()
+
+    func_marker = f"def {FUNC_NAMES[task_num]}("
+    test_marker = f"def {_TEST_MAP[task_num]}("
+
+    if func_marker not in existing_tasks:
+        with open(tasks_py, "a") as f:
+            f.write(f"\n\n{TASK_TEMPLATES[task_num]['func']}")
+        print(f"[bootstrap] Added function for Task {task_num} to tasks.py")
+
+    if test_marker not in existing_tests:
+        with open(test_py, "a") as f:
+            f.write(f"\n\n{TASK_TEMPLATES[task_num]['test']}")
+        print(f"[bootstrap] Added test for Task {task_num} to test_tasks.py")
+
+
+def run_pytest_for_task(task_num):
+    """Run pytest for a single task. Returns True if passed."""
+    test_file = os.path.join(WORKSPACE, "test_tasks.py")
+    if not os.path.isfile(test_file):
+        return False
+    test_name = _TEST_MAP[task_num]
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", test_file, "-k", test_name, "-v", "--tb=short"],
+            capture_output=True, text=True, timeout=120
+        )
+        print(result.stdout)
+        if result.stderr:
+            print(result.stderr, file=sys.stderr)
+        return f"{test_name} PASSED" in result.stdout
+    except Exception as e:
+        print(f"Pytest error: {e}", file=sys.stderr)
+        return False
+
+
+def update_progress(task_num, passed):
+    """Update progress.md for a single task."""
+    with open("progress.md") as f:
+        lines = f.readlines()
+
+    desc = TASK_DESCRIPTIONS[task_num]
+    new_lines = []
+    for line in lines:
+        if desc in line:
+            new_lines.append(f"- [{'DONE' if passed else 'TODO'}] {desc}\n")
+        else:
+            new_lines.append(line)
+
+    with open("progress.md", "w") as f:
+        f.writelines(new_lines)
+
+
 def main():
     client = Client()
 
-    # Step 1: Bootstrap Python files from templates
-    print("=== Bootstrapping Python files ===")
-    bootstrap_files()
+    # Step 1: Find the next task to work on
+    task_num = find_next_task()
+    if task_num is None:
+        print("ALL TASKS COMPLETE")
+        return
 
-    # Step 2: Run pytest to validate
-    print("\n=== Running pytest ===")
-    test_results = run_pytest()
+    print(f"=== Working on Task {task_num}: {TASK_DESCRIPTIONS[task_num]} ===")
 
-    # Step 3: Update progress based on test results
-    print("\n=== Updating progress ===")
-    update_progress(test_results)
+    # Step 2: Bootstrap that one task's function and test
+    print("\n=== Bootstrapping ===")
+    bootstrap_next_task(task_num)
+
+    # Step 3: Run pytest for this task
+    print(f"\n=== Running pytest for Task {task_num} ===")
+    passed = run_pytest_for_task(task_num)
+
+    # Step 4: Update progress
+    update_progress(task_num, passed)
     with open("progress.md") as f:
         print(f.read())
 
-    # Step 4: If all done, stop
-    if all_done():
-        print("\nALL TASKS COMPLETE")
+    if passed:
+        print(f"Task {task_num} PASSED")
         return
 
-    # Step 5: Ask LLM for help if something failed
-    failed_tasks = [n for n, p in test_results.items() if not p]
-    if not failed_tasks:
-        print("\nNo test results yet, or all passed. Done for this iteration.")
-        return
+    # Step 5: Task failed — ask LLM for help
+    print(f"\nTask {task_num} FAILED — asking LLM for help")
 
-    # Load prompt from filesystem
     system_prompt = load_prompt()
 
-    # Load context for LLM
     context = {}
-    for f in ["spec.md", "progress.md", f"{WORKSPACE}/tasks.py", f"{WORKSPACE}/test_tasks.py"]:
+    for fname in [f"{WORKSPACE}/tasks.py", f"{WORKSPACE}/test_tasks.py", "spec.md"]:
         try:
-            with open(f) as fh:
-                context[f] = fh.read()
+            with open(fname) as fh:
+                context[fname] = fh.read()
         except FileNotFoundError:
-            context[f] = ""
+            context[fname] = ""
 
-    failed_names = ", ".join(f"Task {n}" for n in failed_tasks)
     prompt = f"""{system_prompt}
 
-The following pytest tests FAILED: {failed_names}
+Task {task_num} FAILED: {TASK_DESCRIPTIONS[task_num]}
 
 CURRENT tasks.py:
 ```python
@@ -293,8 +279,8 @@ CURRENT test_tasks.py:
 SPEC:
 {context.get('spec.md', '')}
 
-Fix the failing functions in tasks.py so that the tests pass. Do NOT change the test files.
-Only change the function implementations in tasks.py.
+Fix the function for Task {task_num} in tasks.py so that the test passes. Do NOT change the test files.
+Only change the function implementation in tasks.py.
 
 Respond in JSON:
 {{
@@ -342,11 +328,16 @@ Respond in JSON:
                 print(f"Wrote {path}")
 
         # Re-run pytest after LLM fix
-        print("\n=== Re-running pytest after fix ===")
-        test_results = run_pytest()
-        update_progress(test_results)
+        print(f"\n=== Re-running pytest for Task {task_num} ===")
+        passed = run_pytest_for_task(task_num)
+        update_progress(task_num, passed)
         with open("progress.md") as f:
             print(f.read())
+
+        if passed:
+            print(f"Task {task_num} PASSED after LLM fix")
+        else:
+            print(f"Task {task_num} STILL FAILED — will retry next iteration")
 
     except Exception as e:
         print(f"LLM error: {e}", file=sys.stderr)
