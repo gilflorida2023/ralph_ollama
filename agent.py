@@ -133,6 +133,7 @@ _TEST_MAP = {
 def bootstrap_files():
     """Create tasks.py and test_tasks.py from templates if they don't exist,
     or append the next task's function/test if they do exist but are incomplete."""
+    os.makedirs(WORKSPACE, exist_ok=True)
     tasks_py = os.path.join(WORKSPACE, "tasks.py")
     test_py = os.path.join(WORKSPACE, "test_tasks.py")
 
