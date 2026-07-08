@@ -17,13 +17,16 @@ while [ $ITER -lt $MAX_ITERATIONS ]; do
     ITER=$((ITER + 1))
     echo "=== Iteration $ITER ===" | tee -a "$LOGFILE"
     
-    # Run the agent (it will read spec.md + progress.md + todo.md)
+    # Run the agent (it will read spec.md + progress.md)
     if python3 agent.py; then
         echo "Iteration $ITER completed successfully." | tee -a "$LOGFILE"
         
-        # Optional: Check if done
-        if grep -qi "TASK COMPLETE\|GOAL ACHIEVED" progress.md; then
-            echo "🎉 Agent reports completion! Stopping." | tee -a "$LOGFILE"
+        # Optional: Check if done (all 4 tasks marked [DONE])
+        if grep -q "\[DONE\] Task 1" progress.md && \
+           grep -q "\[DONE\] Task 2" progress.md && \
+           grep -q "\[DONE\] Task 3" progress.md && \
+           grep -q "\[DONE\] Task 4" progress.md; then
+            echo "🎉 All tasks complete! Stopping." | tee -a "$LOGFILE"
             break
         fi
     else
