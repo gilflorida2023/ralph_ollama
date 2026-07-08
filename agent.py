@@ -5,270 +5,353 @@ import os
 import subprocess
 from ollama import Client
 
-# Simple tool registry
-TOOLS = {}
-
-def register_tool(func):
-    TOOLS[func.__name__] = func
-    return func
-
 WORKSPACE = "workspace"
 
-def _enforce_workspace(path: str) -> str:
-    """Ensure path is inside the workspace directory."""
-    if path.startswith(f"{WORKSPACE}/") or path.startswith(f"{WORKSPACE}\\"):
-        return path
-    return f"{WORKSPACE}/{path.lstrip('/')}"
+# ── Bootstrap templates ──────────────────────────────────────────────
+# Each task has a function template and a test template.
+# On first run, these are written to workspace/ so pytest can validate.
 
-# Example tools - add your own here
-@register_tool
-def write_file(path: str, content: str) -> str:
-    """Create or overwrite a file with content."""
-    path = _enforce_workspace(path)
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(content)
-    return f"Successfully wrote {path} ({len(content)} characters)"
+TASK_TEMPLATES = {
+    1: {
+        "func": '''import subprocess
+import os
 
-@register_tool
-def read_file(path: str) -> str:
-    """Read the content of a file."""
-    path = _enforce_workspace(path)
-    try:
-        with open(path, encoding="utf-8") as f:
-            return f.read()
-    except Exception as e:
-        return f"Error reading {path}: {e}"
+def clone_repo():
+    """Clone the simplesieve repo into workspace/. Skips if already cloned."""
+    workspace = os.path.abspath(os.path.dirname(__file__))
+    target = os.path.join(workspace, "simplesieve")
+    if os.path.isdir(target):
+        # Already cloned
+        class Result:
+            returncode = 0
+            stderr = ""
+            stdout = ""
+        return Result()
+    result = subprocess.run(
+        ["git", "clone", "https://github.com/gilflorida2023/simplesieve"],
+        cwd=workspace,
+        capture_output=True, text=True
+    )
+    return result
+''',
+        "test": '''import os
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "workspace"))
+from tasks import clone_repo
 
-@register_tool
-def list_dir(path: str = ".") -> str:
-    """List files and directories."""
-    try:
-        return "\n".join(sorted(os.listdir(path)))
-    except Exception as e:
-        return f"Error: {e}"
-
-
-@register_tool
-def run_python(script_path: str, args: str = "") -> str:
-    """Run a Python script and return output + errors."""
-    try:
-        result = subprocess.run(
-            [sys.executable, script_path] + (args.split() if args else []),
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-        output = f"STDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}\nReturn code: {result.returncode}"
-        return output
-    except subprocess.TimeoutExpired:
-        return "❌ Script timed out (30s limit)"
-    except Exception as e:
-        return f"❌ Error running script: {e}"
-
-
-@register_tool
-def search_replace(file_path: str, old_text: str, new_text: str) -> str:
-    """Replace text in a file (great for targeted edits)."""
-    file_path = _enforce_workspace(file_path)
-    try:
-        with open(file_path, encoding="utf-8") as f:
-            content = f.read()
-        new_content = content.replace(old_text, new_text, 1)
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(new_content)
-        return f"Replaced in {file_path}"
-    except Exception as e:
-        return f"Replace failed: {e}"
-
-
-@register_tool
-def run_shell(command: str) -> str:
-    """Run any shell command (use carefully)."""
-    try:
-        result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=60)
-        return f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}\nCode: {result.returncode}"
-    except Exception as e:
-        return f"Command failed: {e}"
-
-@register_tool
-def check_task_status(task_number: int) -> str:
-    """Check if a specific task is complete by running its validation checks."""
-    checks = {
-        1: lambda: os.path.isdir(f"{WORKSPACE}/simplesieve"),
-        2: lambda: os.path.basename(os.getcwd()) == "simplesieve" or os.path.isdir(f"{WORKSPACE}/simplesieve"),
-        3: lambda: os.path.isfile(f"{WORKSPACE}/simplesieve/simplesieve") or os.path.isfile(f"{WORKSPACE}/simplesieve.exe"),
-        4: lambda: _validate_task4(),
-    }
-    if task_number not in checks:
-        return f"Unknown task number: {task_number}"
-    try:
-        passed = checks[task_number]()
-        status = "DONE" if passed else "TODO"
-        return f"Task {task_number}: {status}"
-    except Exception as e:
-        return f"Task {task_number}: ERROR - {e}"
-
-def _validate_task4() -> bool:
-    """Run simplesieve and check if output matches expected prime count."""
-    exe = f"{WORKSPACE}/simplesieve"
-    if not os.path.isfile(exe):
-        return False
-    try:
-        result = subprocess.run(
-            [exe, "-c", "--limit", "1e6"],
-            capture_output=True, text=True, timeout=30
-        )
-        return result.returncode == 0 and "48498" in result.stdout
-    except Exception:
-        return False
-
-TOOLS_SCHEMA = {
-    "write_file": {
-        "type": "object",
-        "properties": {
-            "path": {"type": "string", "description": "File path to write to"},
-            "content": {"type": "string", "description": "Content to write"}
-        },
-        "required": ["path", "content"]
+def test_clone_repo():
+    result = clone_repo()
+    assert result.returncode == 0, f"git clone failed: {result.stderr}"
+    assert os.path.isdir(os.path.join(os.path.dirname(__file__), "..", "workspace", "simplesieve")), \\
+        "Directory workspace/simplesieve does not exist"
+''',
     },
-    "read_file": {
-        "type": "object",
-        "properties": {
-            "path": {"type": "string", "description": "File path to read"}
-        },
-        "required": ["path"]
+    2: {
+        "func": '''import os
+
+def get_project_dir():
+    """Return the absolute path to the simplesieve project directory."""
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), "simplesieve"))
+''',
+        "test": '''import os
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "workspace"))
+from tasks import get_project_dir
+
+def test_get_project_dir():
+    path = get_project_dir()
+    assert os.path.isdir(path), f"Path does not exist: {path}"
+    assert path.endswith("simplesieve"), f"Path does not end with simplesieve: {path}"
+''',
     },
-    "list_dir": {
-        "type": "object",
-        "properties": {
-            "path": {"type": "string", "description": "Directory path to list", "default": "."}
-        },
-        "required": []
+    3: {
+        "func": '''import subprocess
+import os
+
+def build_program():
+    """Build simplesieve using go build."""
+    project_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "simplesieve"))
+    result = subprocess.run(
+        ["go", "build", "-o", "simplesieve"],
+        cwd=project_dir,
+        capture_output=True, text=True
+    )
+    return result
+''',
+        "test": '''import os
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "workspace"))
+from tasks import build_program, get_project_dir
+
+def test_build_program():
+    result = build_program()
+    assert result.returncode == 0, f"go build failed: {result.stderr}"
+    exe = os.path.join(get_project_dir(), "simplesieve")
+    assert os.path.isfile(exe), f"Executable not found: {exe}"
+    assert os.access(exe, os.X_OK), f"File is not executable: {exe}"
+''',
     },
-    "run_python": {
-        "type": "object",
-        "properties": {
-            "script_path": {"type": "string", "description": "Path to the Python script"},
-            "args": {"type": "string", "description": "Space-separated arguments", "default": ""}
-        },
-        "required": ["script_path"]
+    4: {
+        "func": '''import subprocess
+import os
+
+def count_primes():
+    """Run simplesieve -c --limit 1e6 and return the output.
+    Note: simplesieve -c prints the count to stderr."""
+    project_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "simplesieve"))
+    result = subprocess.run(
+        ["./simplesieve", "-c", "--limit", "1e6"],
+        cwd=project_dir,
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"simplesieve failed: {result.stderr}")
+    # -c flag prints count to stderr
+    output = result.stderr.strip() if result.stderr.strip() else result.stdout.strip()
+    return output
+''',
+        "test": '''import os
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "workspace"))
+from tasks import count_primes
+
+def test_count_primes():
+    output = count_primes()
+    assert "78498" in output, f"Expected '78498' in output, got: {output}"
+''',
     },
-    "search_replace": {
-        "type": "object",
-        "properties": {
-            "file_path": {"type": "string", "description": "File to edit"},
-            "old_text": {"type": "string", "description": "Text to find"},
-            "new_text": {"type": "string", "description": "Replacement text"}
-        },
-        "required": ["file_path", "old_text", "new_text"]
-    },
-    "run_shell": {
-        "type": "object",
-        "properties": {
-            "command": {"type": "string", "description": "Shell command to run"}
-        },
-        "required": ["command"]
-    },
-    "check_task_status": {
-        "type": "object",
-        "properties": {
-            "task_number": {"type": "integer", "description": "Task number to check (1-4)"}
-        },
-        "required": ["task_number"]
-    }
 }
 
-def load_context():
+_TEST_MAP = {
+    1: "test_clone_repo",
+    2: "test_get_project_dir",
+    3: "test_build_program",
+    4: "test_count_primes",
+}
+
+
+def bootstrap_files():
+    """Create tasks.py and test_tasks.py from templates if they don't exist,
+    or append the next task's function/test if they do exist but are incomplete."""
+    tasks_py = os.path.join(WORKSPACE, "tasks.py")
+    test_py = os.path.join(WORKSPACE, "test_tasks.py")
+
+    # Read existing content
+    existing_tasks = ""
+    existing_tests = ""
+    if os.path.isfile(tasks_py):
+        with open(tasks_py) as f:
+            existing_tasks = f.read()
+    if os.path.isfile(test_py):
+        with open(test_py) as f:
+            existing_tests = f.read()
+
+    # Find which tasks are already present
+    for task_num in range(1, 5):
+        func_marker = f"def {['clone_repo', 'get_project_dir', 'build_program', 'count_primes'][task_num-1]}("
+        test_marker = f"def {_TEST_MAP[task_num]}("
+        if func_marker not in existing_tasks:
+            with open(tasks_py, "a") as f:
+                f.write(f"\n\n{TASK_TEMPLATES[task_num]['func']}")
+            print(f"[bootstrap] Added function for Task {task_num} to tasks.py")
+        if test_marker not in existing_tests:
+            with open(test_py, "a") as f:
+                f.write(f"\n\n{TASK_TEMPLATES[task_num]['test']}")
+            print(f"[bootstrap] Added test for Task {task_num} to test_tasks.py")
+
+
+def run_pytest():
+    """Run all pytest tests and return results."""
+    test_file = os.path.join(WORKSPACE, "test_tasks.py")
+    if not os.path.isfile(test_file):
+        return {}
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", test_file, "-v", "--tb=short"],
+            capture_output=True, text=True, timeout=120
+        )
+        print(result.stdout)
+        if result.stderr:
+            print(result.stderr, file=sys.stderr)
+        
+        # Parse which tests passed
+        passed = {}
+        for task_num, test_name in _TEST_MAP.items():
+            passed[task_num] = f"{test_name} PASSED" in result.stdout
+        return passed
+    except Exception as e:
+        print(f"Pytest error: {e}", file=sys.stderr)
+        return {}
+
+
+def update_progress(test_results):
+    """Update progress.md based on pytest results."""
+    progress_file = "progress.md"
+    with open(progress_file) as f:
+        lines = f.readlines()
+
+    task_descriptions = {
+        1: "Task 1: Clone repository",
+        2: "Task 2: Navigate to project directory",
+        3: "Task 3: Build the program",
+        4: "Task 4: Count primes in first 1,000,000 natural numbers",
+    }
+
+    new_lines = []
+    for line in lines:
+        updated = False
+        for task_num, desc in task_descriptions.items():
+            if desc in line:
+                if test_results.get(task_num, False):
+                    new_lines.append(f"- [DONE] {desc}\n")
+                else:
+                    new_lines.append(f"- [TODO] {desc}\n")
+                updated = True
+                break
+        if not updated:
+            new_lines.append(line)
+
+    with open(progress_file, "w") as f:
+        f.writelines(new_lines)
+
+
+def load_prompt():
+    """Load the LLM system prompt from prompt.md. Raises error if missing."""
+    path = os.path.join(os.path.dirname(__file__), "prompt.md")
+    if not os.path.isfile(path):
+        raise FileNotFoundError(
+            f"prompt.md not found at {path}. "
+            "This file is required — it contains the LLM system prompt."
+        )
+    with open(path) as f:
+        return f.read()
+
+
+def all_done():
+    """Check if all tasks are marked DONE."""
+    with open("progress.md") as f:
+        content = f.read()
+    return all(f"[DONE] Task {i}:" in content for i in range(1, 5))
+
+
+def main():
+    client = Client()
+
+    # Step 1: Bootstrap Python files from templates
+    print("=== Bootstrapping Python files ===")
+    bootstrap_files()
+
+    # Step 2: Run pytest to validate
+    print("\n=== Running pytest ===")
+    test_results = run_pytest()
+
+    # Step 3: Update progress based on test results
+    print("\n=== Updating progress ===")
+    update_progress(test_results)
+    with open("progress.md") as f:
+        print(f.read())
+
+    # Step 4: If all done, stop
+    if all_done():
+        print("\nALL TASKS COMPLETE")
+        return
+
+    # Step 5: Ask LLM for help if something failed
+    failed_tasks = [n for n, p in test_results.items() if not p]
+    if not failed_tasks:
+        print("\nNo test results yet, or all passed. Done for this iteration.")
+        return
+
+    # Load prompt from filesystem
+    system_prompt = load_prompt()
+
+    # Load context for LLM
     context = {}
-    for f in ["spec.md", "progress.md"]:
+    for f in ["spec.md", "progress.md", f"{WORKSPACE}/tasks.py", f"{WORKSPACE}/test_tasks.py"]:
         try:
             with open(f) as fh:
                 context[f] = fh.read()
         except FileNotFoundError:
             context[f] = ""
-    return context
 
-def main():
-    client = Client()  # or Client(host=...) for remote
+    failed_names = ", ".join(f"Task {n}" for n in failed_tasks)
+    prompt = f"""{system_prompt}
 
-    context = load_context()
-    
-    prompt = f"""You are Ralph, a persistent autonomous agent. You execute tasks from a spec.
+The following pytest tests FAILED: {failed_names}
 
-SPEC (tasks to complete):
-{context['spec.md']}
+CURRENT tasks.py:
+```python
+{context.get(f'{WORKSPACE}/tasks.py', '# file not found')}
+```
 
-PROGRESS (what's done):
-{context['progress.md'] or 'No tasks completed yet.'}
+CURRENT test_tasks.py:
+```python
+{context.get(f'{WORKSPACE}/test_tasks.py', '# file not found')}
+```
 
-INSTRUCTIONS:
-1. Read the progress above. Find the FIRST task NOT marked [DONE].
-2. Execute that task using your tools.
-3. Validate the task completed (use check_task_status).
-4. Update progress.md with the result: mark [DONE] if success, [TODO] if failed.
-5. Do NOT repeat tasks already marked [DONE].
-6. When ALL tasks are [DONE], write "ALL TASKS COMPLETE" in your final message.
+SPEC:
+{context.get('spec.md', '')}
 
-The workspace is the "workspace" directory. All file operations must target files inside workspace/.
+Fix the failing functions in tasks.py so that the tests pass. Do NOT change the test files.
+Only change the function implementations in tasks.py.
 
-Respond in this JSON format:
+Respond in JSON:
 {{
-  "reasoning": "which task I'm working on and why",
-  "tool_calls": [ {{"name": "tool_name", "args": {{"arg1": "value"}}}} ],
-  "progress_update": "Line to append to progress.md, e.g. '- [DONE] Task 1: Clone repository'"
+  "reasoning": "what's wrong and how to fix it",
+  "tool_calls": [{{"name": "write_file", "args": {{"path": "workspace/tasks.py", "content": "<fixed content>"}}}}]
 }}"""
 
-    # Get response from Ollama (use a capable model with tool support)
     response = client.chat(
-            model="qwen2.5:7b",  # or qwen2.5, mistral-nemo, etc. — pick one good at JSON/tools
+        model="qwen2.5:7b",
         messages=[{"role": "user", "content": prompt}],
-        tools=[  # Ollama tool format
-            {
-                "type": "function",
-                "function": {
-                    "name": name,
-                    "description": func.__doc__ or "",
-                    "parameters": TOOLS_SCHEMA.get(name, {"type": "object", "properties": {}, "required": []})
+        tools=[{
+            "type": "function",
+            "function": {
+                "name": "write_file",
+                "description": "Write content to a file",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "content": {"type": "string"}
+                    },
+                    "required": ["path", "content"]
                 }
-            } for name, func in TOOLS.items()
-        ],
+            }
+        }],
         format="json",
-        options={"temperature": 0.7}
+        options={"temperature": 0.3}
     )
 
     try:
         content = response['message']['content']
+        print("LLM RESPONSE:", content[:500], file=sys.stderr)
         result = json.loads(content)
-        
         print("Reasoning:", result.get("reasoning"))
-        
-        # Execute tool calls
+
         for call in result.get("tool_calls", []):
             name = call.get("name")
-            args = call.get("args", {})
-            if name in TOOLS:
-                print(f"Calling {name}({args})")
-                try:
-                    output = TOOLS[name](**args)
-                    print("Tool output:", output)
-                except TypeError as e:
-                    print(f"Argument error: {e}", file=sys.stderr)
-                    print(f"Expected schema: {TOOLS_SCHEMA.get(name, {})}", file=sys.stderr)
-                    sys.exit(1)
-            else:
-                print(f"Unknown tool: {name}")
-        
-        # Update progress
-        if "progress_update" in result:
-            with open("progress.md", "a") as f:
-                f.write(f"\n{result['progress_update']}")
-        
-        print("Agent step complete.")
-        
+            args = {k: v.replace("\\n", "\n").replace("\\t", "\t") if isinstance(v, str) else v
+                    for k, v in call.get("args", {}).items()}
+            if name == "write_file":
+                path = os.path.join(WORKSPACE, os.path.basename(args.get("path", "")))
+                os.makedirs(WORKSPACE, exist_ok=True)
+                with open(path, "w") as f:
+                    f.write(args.get("content", ""))
+                print(f"Wrote {path}")
+
+        # Re-run pytest after LLM fix
+        print("\n=== Re-running pytest after fix ===")
+        test_results = run_pytest()
+        update_progress(test_results)
+        with open("progress.md") as f:
+            print(f.read())
+
     except Exception as e:
-        print("Error parsing agent response:", e, file=sys.stderr)
-        sys.exit(1)
+        print(f"LLM error: {e}", file=sys.stderr)
+
+    print("Agent step complete.")
+
 
 if __name__ == "__main__":
     main()
