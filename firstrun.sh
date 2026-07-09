@@ -3,6 +3,19 @@
 # ralph.sh resolve against the project root regardless of invoke location.
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Check for jq (needed by ralph.sh for Ollama API calls)
+if ! command -v jq &>/dev/null; then
+    echo "jq is required but not installed."
+    echo "It is used to construct Ollama API requests."
+    echo ""
+    echo "Press Enter to install with:"
+    echo "  sudo apt-get install -y jq"
+    echo ""
+    echo "Or press Ctrl-C to abort."
+    read -r
+    sudo apt-get install -y jq
+fi
+
 rm -rf workspace/
 
 rm logs/*

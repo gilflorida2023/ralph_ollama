@@ -81,6 +81,11 @@ LOGFILE="logs/ralph_$(date +%s).log"
 
 mkdir -p logs
 
+# Reset Ollama token accumulator for a fresh run
+echo '{"calls":0,"prompt_tokens":0,"completion_tokens":0}' > /tmp/ralph_token_usage.json
+# Record start epoch for elapsed-time reporting at loop exit
+RALPH_START_EPOCH=$(date +%s)
+
 # Setup workspace from spec.md. By default we CONTINUE an existing run and
 # skip setup (so progress is preserved). Use --clean to force a fresh setup.
 if [ "$CLEAN" = true ]; then
@@ -298,22 +303,29 @@ PY
                 echo "=== END PROMPT ===" | tee -a "$LOGFILE"
             fi
 
-            # Call LLM to decide what to do with the task
-            PROMPT_RESPONSE=$(python3 - <<'PY' || true
-import json
-from ollama import Client
-
-with open('/tmp/ralph_prompt.txt') as f:
-    prompt = f.read()
-
-try:
-    client = Client()
-    resp = client.chat(model='batiai/qwen3.5-9b:q4', messages=[{'role':'user','content':prompt}], format='json', options={'temperature':0.7})
-    print(resp['message']['content'])
-except Exception as e:
-    import traceback; traceback.print_exc()
-PY
+            # Call LLM via Ollama API (curl + jq for raw token stats)
+            PROMPT_RESPONSE=$(
+              jq -Rs --arg model 'batiai/qwen3.5-9b:q6' \
+                '{model: $model, messages: [{role: "user", content: .}], format: "json", stream: false, options: {temperature: 0.7}}' \
+                /tmp/ralph_prompt.txt \
+              | curl -s http://localhost:11434/api/chat -d @- \
+              | tee /tmp/ralph_last_response.json \
+              | jq -r '.message.content // ""'
             )
+
+            # Accumulate token usage
+            if [ -f /tmp/ralph_token_usage.json ]; then
+              python3 - /tmp/ralph_token_usage.json /tmp/ralph_last_response.json <<'PY' || true
+import json, sys
+with open(sys.argv[1]) as a_f, open(sys.argv[2]) as r_f:
+    a = json.load(a_f)
+    r = json.load(r_f)
+a['calls'] += 1
+a['prompt_tokens'] += r.get('prompt_eval_count', 0)
+a['completion_tokens'] += r.get('eval_count', 0)
+json.dump(a, open(sys.argv[1], 'w'))
+PY
+            fi
 
             # Log raw response
             if [ "$VERBOSE" = true ]; then
@@ -441,5 +453,41 @@ PY
 
     sleep 1
 done
+
+# Print token usage summary and elapsed time
+if [ -f /tmp/ralph_token_usage.json ]; then
+  python3 - /tmp/ralph_token_usage.json "$RALPH_START_EPOCH" <<'PY'
+import json, sys, time
+
+with open(sys.argv[1]) as f:
+    u = json.load(f)
+start = int(sys.argv[2])
+
+elapsed = int(time.time()) - start
+h = elapsed // 3600
+m = (elapsed % 3600) // 60
+s = elapsed % 60
+if h:
+    elapsed_str = f"T{h}:{m:02d}:{s:02d}"
+elif m:
+    elapsed_str = f"T{m}:{s:02d}"
+else:
+    elapsed_str = f"T{s}"
+
+c = u['calls']
+pt = u['prompt_tokens']
+ct = u['completion_tokens']
+tt = pt + ct
+
+print("=== Summary ===")
+print(f"  Elapsed time:      {elapsed_str}")
+print(f"  Ollama calls:      {c}")
+if c:
+    print(f"  Prompt tokens:     {pt}  (avg {pt//c}/call)")
+    print(f"  Completion tokens: {ct}  (avg {ct//c}/call)")
+    print(f"  Total tokens:      {tt}  (avg {tt//c}/call)")
+print("================")
+PY
+fi
 
 echo "Ralph loop ended after $ITER iterations."
