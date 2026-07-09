@@ -6,25 +6,80 @@ set -euo pipefail
 MAX_ITERATIONS=${1:-50}
 ITER=0
 LOGFILE="logs/ralph_$(date +%s).log"
+VERBOSE=false
+
+# Parse verbose flag
+if [[ "$1" == "-v" || "$1" == "--verbose" ]]; then
+    VERBOSE=true
+    shift
+fi
 
 mkdir -p logs
 
 # Setup workspace from spec.md
 python3 agent.py setup
-
 echo "=== Starting Ralph Wiggum Loop for Ollama ==="
 echo "Press Ctrl+C to stop. Max iterations: $MAX_ITERATIONS"
+if [[ "$VERBOSE" == true ]]; then
+    echo "=== VERBOSE MODE: Tool calls will be logged in detail ==="
+fi
 
 while [ $ITER -lt $MAX_ITERATIONS ]; do
     ITER=$((ITER + 1))
     echo "=== Iteration $ITER ===" | tee -a "$LOGFILE"
 
     # Get next task using exclusive get_next_task tool (direct tool call, no CLI confusion)
+    if [[ "$VERBOSE" == true ]]; then
+        echo "=== DEBUG: Calling execute_get_next_task ===" | tee -a "$LOGFILE"
+    fi
     NEXT_TASK_JSON=$(python3 -c "
-import json
+import json, sys, io
 from agent import execute_get_next_task
-execute_get_next_task({})
+
+old_stdout = sys.stdout
+try:
+    sys.stdout = io.StringIO()
+    result = execute_get_next_task({})
+    captured = sys.stdout.getvalue().strip()
+    sys.stdout = old_stdout
+    
+    if [[ "$VERBOSE" == true ]]; then
+        print(f'=== TOOL EXECUTION DEBUG ===')
+        print(f'Return type: {type(result).__name__}')
+        print(f'Is string: {isinstance(result, str)}')
+        print(f'Length: {len(result) if result else 0}')
+        if isinstance(result, str) and result.strip():
+            print(f'Result preview: {result[:200]}')
+    
+    if result:
+        print(result)
+    else:
+        print('{}')
+except Exception as e:
+    if [[ "$VERBOSE" == true ]]; then
+        import traceback
+        print(f'ERROR: {e}')
+        print('Stack trace:')
+        traceback.print_exc()
+    else:
+        print(f'ERROR: {e}', file=sys.stderr)
 " 2>/dev/null)
+
+    if [[ "$VERBOSE" == true ]]; then
+        echo "=== DEBUG: Raw NEXT_TASK_JSON result ===" | tee -a "$LOGFILE"
+        if [[ "$NEXT_TASK_JSON" ]]; then
+            echo "Result is not empty!" | tee -a "$LOGFILE"
+            if [[ "$NEXT_TASK_JSON" == *\"done\":\"true\"* ]]; then
+                echo "Result indicates DONE" | tee -a "$LOGFILE"
+            elif [[ "$NEXT_TASK_JSON" == *\"num\":* ]]; then
+                echo "Result contains task info (num field)" | tee -a "$LOGFILE"
+            else
+                echo "Result is something else: $NEXT_TASK_JSON" | tee -a "$LOGFILE"
+            fi
+        else
+            echo "ERROR: NEXT_TASK_JSON is empty!" | tee -a "$LOGFILE"
+        fi
+    fi
 
     # Check if done - Ralph wants to get the next task, if done it should be {\"done\": true}
     if echo "$NEXT_TASK_JSON" | grep -q '"done": true'; then
