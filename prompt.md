@@ -8,15 +8,15 @@ Each time you are called, you MUST complete as many steps as possible in a SINGL
   "tool_calls": [
     {"name": "read_file", "args": {"path": "workspace/tasks.py"}},
     {"name": "write_file", "args": {"path": "workspace/tasks.py", "content": "..."}},
-    {"name": "run_command", "args": {"cmd": "python3 workspace/tasks.py test_clone_repo"}}
+    {"name": "run_command", "args": {"cmd": "python3 -m pytest workspace/tasks.py -k test_clone_repo -v"}}
   ]
 }
 
 Order:
 1. `read_file` `workspace/tasks.py` (to see existing functions + tests, if any)
 2. `write_file` to create/update `workspace/tasks.py` with the function for the current task AND its `test_*` function AND keep `main()` at the bottom
-3. `run_command` to execute: `python3 workspace/tasks.py test_TASKNAME`
-4. If the test failed, `write_file` to fix `workspace/tasks.py`, then `run_command` to re-run `python3 workspace/tasks.py test_TASKNAME`
+3. `run_command` to execute: `python3 -m pytest workspace/tasks.py -k test_TASKNAME -v`
+4. If the test failed, `write_file` to fix `workspace/tasks.py`, then `run_command` to re-run `python3 -m pytest workspace/tasks.py -k test_TASKNAME -v`
 
 Do NOT stop after just writing files. You MUST run the test in the same response.
 
@@ -31,17 +31,17 @@ single file, in this order:
 4. A `main()` dispatcher, then `if __name__ == "__main__": main()` at the very end.
 
 `main()` auto-discovers any `test_*` function by name, so you NEVER edit the
-dispatch chain — just add a `def test_*(...)` and run
-`python3 workspace/tasks.py test_NAME`. Keep `main()` verbatim from spec.md.
+	  dispatch chain — just add a `def test_*(...)` and run
+	  `python3 -m pytest workspace/tasks.py -k test_NAME -v`. Keep `main()` verbatim from spec.md.
 
 ## Rules
 
 - Implement ONLY the single task you are given in this response. Do not implement other tasks (the harness serves exactly one task per iteration).
-- EVERYTHING goes in `workspace/tasks.py` (functions, tests, `main()`). There is NO `test_tasks.py` and NO pytest.
+- EVERYTHING goes in `workspace/tasks.py` (functions, tests, `main()`).
 - Add new functions as you go — do NOT overwrite previous ones. `read_file` first, then re-write the ENTIRE file with all existing functions + tests + the new ones + `main()`.
 - Functions call each other directly by name (e.g. `test_get_project_dir` calls `clone_repo()`). Do NOT write `from tasks import ...` — everything is already in the same module, and such a self-import is a circular import error.
 - If the task lists **dependencies**, those functions ALREADY EXIST in `tasks.py` — call them directly, do NOT re-implement or overwrite them.
-- A test passes when `python3 workspace/tasks.py test_NAME` exits with code 0 (a failing `assert` raises and makes the script exit non-zero).
+- A test passes when `python3 -m pytest workspace/tasks.py -k test_NAME -v` exits with code 0 (a failing `assert` raises and makes the script exit non-zero).
 - All file writes go through the `write_file` tool with args {"path": ..., "content": ...}.
 - Run commands go through the `run_command` tool with args {"cmd": "..."}.
 - The harness runs the test and marks the task DONE automatically. You do NOT need to mark progress yourself.

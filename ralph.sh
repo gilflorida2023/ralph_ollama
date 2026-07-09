@@ -8,24 +8,11 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 
 # Use the project's virtualenv (it has python deps) instead of system python3.
 if [ -f venv/bin/activate ]; then
-    # shellcheck disable=SC1091
     source venv/bin/activate
 fi
 
-# Kill any PREVIOUS ralph.sh run still lingering (e.g., a stuck `--clean 50`
-# from an earlier session). A leftover run holds the GPU/model and makes new
-# Ollama chat calls hang indefinitely.
-#
-# IMPORTANT implementation notes (learned the hard way):
-#  * Run this INLINE in the main shell. A `bash -c` / `timeout bash -c`
-#    subshell would itself match `pgrep -f "ralph\.sh"` (its own cmdline
-#    literally contains "ralph.sh") and kill ITSELF instead of the stale run.
-#  * `pgrep -f "ralph\.sh"` ALSO matches our own launcher chain (the tool
-#    shell, `timeout`, etc. all have "ralph.sh" in their command line). We must
-#    skip $$ AND every ancestor (parent, grandparent, ...), otherwise we kill
-#    the very shell that launched us and the run hangs.
-#  * Do NOT use `pkill -P` here: it hangs in this environment. `ps --ppid` is
-#    safe for listing children.
+# Kill any PREVIOUS ralph.sh run still lingering (a leftover run holds the GPU).
+# Skip $$ and all ancestor pids to avoid killing our own launcher tree.
 SELF=$$
 ANCESTORS="$SELF"
 p=$PPID
@@ -89,9 +76,6 @@ else
     if [ ! -f workspace/tasks.json ]; then
         python3 agent.py setup
     fi
-    if [ "$VERBOSE" = true ]; then
-        echo "=== Continuing existing run (skipping agent.py setup) ==="
-    fi
 fi
 
 # --- Token accumulator + elapsed-time reporting ---
@@ -142,7 +126,7 @@ while [ "$ITER" -lt "$MAX_ITERATIONS" ]; do
     ITER=$((ITER + 1))
     echo "=== Iteration $ITER ===" | tee -a "$LOGFILE"
 
-    # --- 1. next_task ---
+    # --- 1. next_task --- (fix: was always returning {"done": true})
     NEXT_TASK_JSON=$(python3 - <<'PY'
 import json
 import sys
@@ -156,6 +140,7 @@ PY
     if echo "$NEXT_TASK_JSON" | grep -q '"done": true'; then
         STUCK=$(python3 - <<'PY'
 import sys, json
+import sys
 sys.path.insert(0, '.')
 from agent import load_tasks, load_progress
 p = load_progress()
@@ -163,20 +148,20 @@ print('stuck' if any(not p.get(t['num'], False) for t in load_tasks()) else 'don
 PY
 )
         if [ "$STUCK" = "stuck" ]; then
-            echo "⚠️  No available task — some tasks are BLOCKED. Stopping." | tee -a "$LOGFILE"
+            echo "⚠️ No available task — some tasks are BLOCKED. Stopping." | tee -a "$LOGFILE"
         else
             echo "🎉 All tasks complete! Stopping." | tee -a "$LOGFILE"
         fi
         break
     fi
 
-    TASK_NUM=$(echo "$NEXT_TASK_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['num'])")
-    TASK_TITLE=$(echo "$NEXT_TASK_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['title'])")
-    TASK_FUNC=$(echo "$NEXT_TASK_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('func', ''))")
-    TASK_TEST=$(echo "$NEXT_TASK_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('test', ''))")
-    TASK_DEPS=$(echo "$NEXT_TASK_JSON" | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin).get('depends_on', [])))")
+    TASK_NUM=$(echo "$NEXT_TASK_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['num'])" 2>/dev/null)
+    TASK_TITLE=$(echo "$NEXT_TASK_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['title'])" 2>/dev/null)
+    TASK_FUNC=$(echo "$NEXT_TASK_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('func', ''))" 2>/dev/null)
+    TASK_TEST=$(echo "$NEXT_TASK_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('test', ''))" 2>/dev/null)
+    TASK_DEPS=$(echo "$NEXT_TASK_JSON" | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin).get('depends_on', [])))" 2>/dev/null)
 
-    echo "🎯 Working on Task $TASK_NUM: $TASK_TITLE (function: $TASK_FUNC, test: $TASK_TEST, deps: $TASK_DEPS)" | tee -a "$LOGFILE"
+    echo "🎯 Working on Task $TASK_NUM: $TASK_TITLE (function: $TASK_FUNC, test: $TASK_TEST)" | tee -a "$LOGFILE"
 
     # --- 2. restore done code (last successful snapshots) ---
     if [ -n "$RALPH_DONE_CODE" ]; then
@@ -196,7 +181,7 @@ PY
         rm -rf simplesieve
     fi
 
-    # Build prompt for this task, including reference implementation + tests from spec.md
+    # Build prompt for this task
     python3 - "$NEXT_TASK_JSON" "$TASK_DEPS" <<'PY'
 import json, sys, re
 
@@ -206,10 +191,9 @@ deps = json.loads(sys.argv[2])
 with open('prompt.md') as f:
     system = f.read().strip()
 
-# Inject the reference implementation and test from spec.md so the model sees
-# the exact API and behavior it must produce, rather than guessing.
 with open('spec.md') as f:
     spec = f.read().strip()
+
 m = re.search(r'## Task ' + str(task['num']) + r':.*?```python\s*\n(.*?)```\s*\n\*\*Test:\*\*.*?```python\s*\n(.*?)```', spec, re.DOTALL)
 func_code = m.group(1).strip() if m else ''
 test_code = m.group(2).strip() if m else ''
@@ -281,46 +265,46 @@ PY
             echo "=== END PROMPT ===" | tee -a "$LOGFILE"
         fi
 
-        # Call Ollama via jq+Ollama API (robust - no sed escaping)
-        PROMPT_RESPONSE=$(
-            jq -Rs --arg model "$MODEL_NAME" \
-                '{model: $model, messages: [{role: "user", content: .}], format: "json", stream: false, options: {temperature: 0.7}}' \
-                /tmp/ralph_prompt.txt \
-            | curl -s http://localhost:11434/api/chat -d @- \
-            | tee /tmp/ralph_last_response.json \
-            | jq -r '.message.content // ""'
-        )
+        # Call Ollama and capture API response (robust - curl and jq in sequence)
+        (jq -Rs --arg model "$MODEL_NAME" \
+            '{model: $model, messages: [{role: "user", content: .}], format: "json", stream: false, options: {temperature: 0.7}}' \
+            /tmp/ralph_prompt.txt \
+         | curl -s http://localhost:11434/api/chat -d @- \
+         | tee /tmp/ralph_last_response.json \
+         | jq -r '.message.content // ""') > /tmp/ralph_response.txt
 
-        # Accumulate token usage
-        python3 - /tmp/ralph_token_usage.json /tmp/ralph_last_response.json <<'PY' || true
+        # Extract content and accumulate token usage from last_response.json
+        PROMPT_RESPONSE=$(cat /tmp/ralph_response.txt 2>/dev/null || echo "")
+        if [ -f /tmp/ralph_token_usage.json ] && [ -f /tmp/ralph_last_response.json ]; then
+            python3 - /tmp/ralph_token_usage.json /tmp/ralph_last_response.json <<'PY'
 import json, sys
 with open(sys.argv[1]) as a_f, open(sys.argv[2]) as r_f:
     a = json.load(a_f)
     r = json.load(r_f)
 a['calls'] += 1
-if 'message' in r and 'content' in r['message']:
-    pass
-else:
-    if 'prompt_eval_count' in r:
-        a['prompt_tokens'] += r['prompt_eval_count']
-    if 'eval_count' in r:
-        a['completion_tokens'] += r['eval_count']
+if 'prompt_eval_count' in r:
+    a['prompt_tokens'] += r['prompt_eval_count']
+if 'eval_count' in r:
+    a['completion_tokens'] += r['eval_count']
 json.dump(a, open(sys.argv[1], 'w'))
 PY
+        fi
 
         if [ "$VERBOSE" = true ]; then
             echo "=== DEBUG: Raw Ollama response (attempt $ATT) ===" | tee -a "$LOGFILE"
-            echo "$PROMPT_RESPONSE" | tee -a "$LOGFILE"
+            cat /tmp/ralph_response.txt | tee -a "$LOGFILE"
             echo "=== END RESPONSE ===" | tee -a "$LOGFILE"
         else
-            echo "LLM response: $PROMPT_RESPONSE" >> "$LOGFILE"
+            echo "LLM response: $(cat /tmp/ralph_response.txt 2>/dev/null | head -c 200)" >> "$LOGFILE"
         fi
 
-        # Parse + execute tool calls, ALLOWED = read_file/write_file/run_command/debrief_task
-        python3 - "$PROMPT_RESPONSE" <<'PY' 2>&1
+        python3 - "$PROMPT_RESPONSE" <<'PY' 2>&1 || true
 import json, subprocess, sys, re
 
 raw = sys.argv[1] if len(sys.argv) > 1 else ""
+
+raw = raw.strip()
+raw = raw.replace('```json', '').replace('```', '').strip()
 
 def normalize_tool_calls(raw):
     try:
@@ -359,15 +343,13 @@ ALLOWED = {'read_file', 'write_file', 'run_command', 'debrief_task'}
 for call in normalized:
     name = call['name']
     args = call['args']
-    print(f"Tool: {name}({json.dumps(args)})")
     if name not in ALLOWED:
         print(f"Tool {name} -> BLOCKED (not permitted for model)")
         continue
+    print(f"Tool: {name}({json.dumps(args)})")
     result = subprocess.run(['python3', 'agent.py', 'execute', name, json.dumps(args)],
                             capture_output=True, text=True, timeout=130)
     print(f"  -> {result.stdout.strip()[:200]}")
-
-print('Step complete.')
 PY
 
         # --- 4. validate via pytest ---
@@ -387,7 +369,6 @@ PY
         else
             if [ "$ATT" -lt "$MAX_ATTEMPTS" ]; then
                 echo "=== Test failed (attempt $ATT/$MAX_ATTEMPTS), adding feedback ===" | tee -a "$LOGFILE"
-                # Append failure feedback to prompt
                 TASKS_PY_CONTENT="$(cat workspace/tasks.py 2>/dev/null || echo '')"
                 python3 - "$TASK_FUNC" "$TASK_TEST" "$TASKS_PY_CONTENT" "$PYTEST_OUTPUT" <<'PY'
 import sys

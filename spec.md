@@ -5,8 +5,8 @@ You must create ONE Python file in the `workspace/` directory:
 1. **`tasks.py`** — every function AND its test go in this single file.
 
 After writing each function and its test, run it directly as a script to
-validate: `python3 workspace/tasks.py <test_name>`. Only mark a task `[DONE]`
-when its test passes (the script exits 0).
+	validate: `python3 -m pytest workspace/tasks.py -k <test_name> -v`. Only mark a task `[DONE]`
+	when its test passes (the script exits 0).
 
 The file ends with a `main()` dispatcher (see the **Entry point** section) that
 runs whichever `test_*` function matches `sys.argv[1]`. `main()` auto-discovers
@@ -45,7 +45,7 @@ def test_clone_repo():
     assert os.path.isdir("workspace/simplesieve"), "Directory workspace/simplesieve does not exist"
 ```
 
-**Validation:** Run `python3 workspace/tasks.py test_clone_repo`
+**Validation:** Run `python3 -m pytest workspace/tasks.py -k test_clone_repo -v`
 **Done:** False
 
 ---
@@ -74,7 +74,7 @@ def test_get_project_dir():
     assert path.endswith("simplesieve"), f"Path does not end with simplesieve: {path}"
 ```
 
-**Validation:** Run `python3 workspace/tasks.py test_get_project_dir`
+**Validation:** Run `python3 -m pytest workspace/tasks.py -k test_get_project_dir -v`
 **Done:** False
 
 ---
@@ -107,7 +107,7 @@ def test_build_program():
     assert os.access(exe, os.X_OK), f"File is not executable: {exe}"
 ```
 
-**Validation:** Run `python3 workspace/tasks.py test_build_program`
+**Validation:** Run `python3 -m pytest workspace/tasks.py -k test_build_program -v`
 **Done:** False
 
 ---
@@ -137,7 +137,7 @@ def test_count_primes():
     assert "78498" in output, f"Expected '78498' in output, got: {output}"
 ```
 
-**Validation:** Run `python3 workspace/tasks.py test_count_primes`
+**Validation:** Run `python3 -m pytest workspace/tasks.py -k test_count_primes -v`
 **Done:** False
 
 ---

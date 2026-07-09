@@ -26,4 +26,4 @@ fi
 source venv/bin/activate
 pip install -r requirements.txt
 
- ./ralph.sh 50 -v --clean
+ ./ralph.sh 1 -v --clean
