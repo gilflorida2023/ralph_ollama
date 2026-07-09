@@ -15,17 +15,20 @@ Only mark a task `[DONE]` when its corresponding pytest test passes.
 **Function:** `clone_repo()` in `tasks.py`
 
 ```python
+import os
+import shutil
+from subprocess import run
+
 def clone_repo():
     """Clone https://github.com/gilflorida2023/simplesieve into workspace/simplesieve/.
-    Use subprocess.run to execute: git clone https://github.com/gilflorida2023/simplesieve workspace/simplesieve
-    Run it from the project root so the repo lands inside workspace/simplesieve/.
     Return the subprocess result.
-
-    IMPORTANT: This step must be idempotent. If workspace/simplesieve already
-    exists (e.g. from a previous run/session), remove it first (e.g.
-    shutil.rmtree('workspace/simplesieve')) before running git clone, so the
-    clone never fails with "destination path already exists".
     """
+    target = "workspace/simplesieve"
+    # Idempotent: remove any pre-existing clone so git clone never fails with
+    # "destination path already exists".
+    if os.path.isdir(target):
+        shutil.rmtree(target)
+    return run(["git", "clone", "https://github.com/gilflorida2023/simplesieve", target])
 ```
 
 **Test:** `test_clone_repo()` in `test_tasks.py`

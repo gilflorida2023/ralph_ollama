@@ -33,7 +33,7 @@ Do NOT stop after just writing files. You MUST run pytest in the same response.
 - If a test fails, the harness gives you **detailed feedback** including the full current `workspace/tasks.py` and `workspace/test_tasks.py` content, plus the pytest output. You have **up to 10 retry attempts** to fix the task.
 - After 10 failed attempts, the task is marked as BLOCKER and the Ralph loop stops processing further tasks.
 - Tests import from `tasks` (e.g. `from tasks import clone_repo`), because pytest runs from the project root with `workspace/test_tasks.py`.
-- `clone_repo` must be **idempotent**: if `workspace/simplesieve` already exists (from a prior run/session), remove it first (e.g. `shutil.rmtree('workspace/simplesieve')`) before running `git clone`, so the clone never fails with "destination path already exists".
+- `clone_repo` must be **idempotent** and must clone into `workspace/simplesieve` with an **explicit relative target**: `run(["git", "clone", "https://github.com/gilflorida2023/simplesieve", "workspace/simplesieve"])`. Never run `git clone` without the `workspace/simplesieve` argument (that would clone into the current working directory instead of the workspace). If `workspace/simplesieve` already exists, remove it first (e.g. `shutil.rmtree('workspace/simplesieve')`) so the clone never fails with "destination path already exists".
 
 ## Output format
 

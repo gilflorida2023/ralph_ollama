@@ -3,6 +3,12 @@
 
 set -euo pipefail
 
+# Pin cwd to the script's directory (PROJECT_ROOT) so all relative paths used
+# by the agent (workspace/simplesieve, workspace/test_tasks.py, prompt.md) and
+# by the generated clone_repo() resolve deterministically against the project
+# root, regardless of where this script is invoked from.
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 MAX_ITERATIONS=50
 VERBOSE=false
 CLEAN=false
@@ -50,6 +56,12 @@ if [ ! -d workspace/.git ]; then
     git -C workspace init -q
     printf 'simplesieve/\n__pycache__/\n.pytest_cache/\n' > workspace/.gitignore
 fi
+
+# Create an initial baseline commit so discard-on-start always has a HEAD to
+# revert to (otherwise a crashed session's partial files would persist).
+git -C workspace add -A
+git -C workspace commit -q -m "setup: fresh workspace" || true
+
 echo "=== Starting Ralph Wiggum Loop for Ollama ==="
 echo "Press Ctrl+C to stop. Max iterations: $MAX_ITERATIONS"
 if [ "$VERBOSE" = true ]; then
@@ -144,6 +156,15 @@ PY
                 git -C workspace clean -fd
                 echo "=== Reverted to last committed baseline ===" | tee -a "$LOGFILE"
             fi
+        fi
+
+        # Safety net: remove any stray clone that landed at the project root
+        # (a clone_repo that omitted the explicit workspace/simplesieve target
+        # would create ./simplesieve here instead of ./workspace/simplesieve).
+        # The legitimate clone always lives in workspace/simplesieve.
+        if [ -e simplesieve ]; then
+            echo "=== Removing stray project-root clone ./simplesieve ===" | tee -a "$LOGFILE"
+            rm -rf simplesieve
         fi
 
         # Build the prompt for the task and write to /tmp/ralph_prompt.txt
