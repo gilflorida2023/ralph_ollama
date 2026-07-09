@@ -110,9 +110,9 @@ def test_build_program():
 
 ```python
 def count_primes():
-    """Run simplesieve -c --limit 1e6 and return the output as a string.
+    """Run simplesieve -c --limit 1e6, print the result to stdout, and return
+    it as a string.
     Use subprocess.run, set cwd to get_project_dir().
-    Note: -c flag prints count to stderr, so return stderr (or stdout as fallback).
     """
 ```
 
