@@ -265,15 +265,18 @@ def execute_mark_task(args):
     if "ERROR" in result:
         return f"ERROR: {result}"
     
+    # Regenerate tasks.json from spec (keeps task definitions current)
     tasks = parse_spec()
     with open(TASKS_JSON, "w") as f:
         json.dump(tasks, f, indent=2)
     
+    # Regenerate progress.md, PRESERVING existing done/blocked markers so that
+    # marking one task does not reset the others back to TODO.
+    progress = load_progress()
     lines = []
     for t in tasks:
-        task_state = "DONE" if t["num"] == num and done else "TODO"
-        lines.append(f"- [{task_state}] Task {t['num']}: {t['title']}\n")
-    
+        marker = "DONE" if progress.get(t["num"], False) else "TODO"
+        lines.append(f"- [{marker}] Task {t['num']}: {t['title']}\n")
     with open(PROGRESS_PATH, "w") as f:
         f.writelines(lines)
     

@@ -9,11 +9,14 @@ LOGFILE="logs/ralph_$(date +%s).log"
 VERBOSE=false
 
 # Parse verbose flag
-if [[ "$1" == "-v" || "$1" == "--verbose" ]]; then
-    VERBOSE=true
-    shift
-fi
+if [ "$#" -gt 0 ]
+then
 
+    if [[ "$1" == "-v" || "$1" == "--verbose" || $2 == "-v" || $2 == "--verbose" ]]; then
+        VERBOSE=true
+        shift
+    fi
+fi
 mkdir -p logs
 
 # Setup workspace from spec.md
