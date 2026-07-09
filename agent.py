@@ -256,12 +256,37 @@ def execute_get_next_task(args):
         sys.stdout = old_stdout
 
 
+def execute_mark_task(args):
+    num = int(args.get("num", 0))
+    state = args.get("state", "done")
+    
+    done = state == "done"
+    result = update_progress_file(num, done)
+    if "ERROR" in result:
+        return f"ERROR: {result}"
+    
+    tasks = parse_spec()
+    with open(TASKS_JSON, "w") as f:
+        json.dump(tasks, f, indent=2)
+    
+    lines = []
+    for t in tasks:
+        task_state = "DONE" if t["num"] == num and done else "TODO"
+        lines.append(f"- [{task_state}] Task {t['num']}: {t['title']}\n")
+    
+    with open(PROGRESS_PATH, "w") as f:
+        f.writelines(lines)
+    
+    return f"OK: Task {num} marked as {state}"
+
+
 TOOLS = {
     "read_file": execute_read_file,
     "write_file": execute_write_file,
     "run_command": execute_run_command,
     "update_progress": execute_update_progress,
     "get_next_task": execute_get_next_task,
+    "mark_task": execute_mark_task,
 }
 
 
@@ -301,7 +326,5 @@ def main():
     else:
         print(f"ERROR: unknown command '{cmd}'", file=sys.stderr)
         sys.exit(1)
-
-
 if __name__ == "__main__":
     main()
