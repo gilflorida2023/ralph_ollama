@@ -4,12 +4,12 @@
 set -euo pipefail
 
 # Pin cwd to the script's directory (PROJECT_ROOT) so all relative paths used
-# by the agent (workspace/simplesieve, workspace/test_tasks.py, prompt.md) and
+# by the agent (workspace/simplesieve, workspace/tasks.py, prompt.md) and
 # by the generated clone_repo() resolve deterministically against the project
 # root, regardless of where this script is invoked from.
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Use the project's virtualenv (it has pytest and the ollama client) instead
+# Use the project's virtualenv (it has the ollama client) instead
 # of the system python3, which lacks them.
 if [ -f venv/bin/activate ]; then
     # shellcheck disable=SC1091
@@ -46,7 +46,7 @@ for pid in $(pgrep -f "ralph\.sh" 2>/dev/null || true); do
     [ "$skip" = 1 ] && continue
     echo "=== Killing previous ralph.sh process (pid $pid) ===" >&2
     for cpid in $(ps -o pid= --ppid "$pid" 2>/dev/null); do
-        kill "$cpid" 2>/dev/null || true   # its blocking ollama chat/pytest
+        kill "$cpid" 2>/dev/null || true   # its blocking ollama chat
     done
     kill "$pid" 2>/dev/null || true
 done
@@ -84,8 +84,8 @@ mkdir -p logs
 # --- File-change tracing (debug) ---
 # Open a SEPARATE debug log (never the main run log) on the real file system
 # under logs/ (NOT /tmp, which is a tmpfs / in-memory here) and record a
-# sha256 + size checkpoint of the two tracked files so we can see exactly
-# which harness step reverts / overwrites tasks.py or test_tasks.py.
+# sha256 + size checkpoint of the tracked file (workspace/tasks.py) so we can
+# see exactly which harness step reverts / overwrites it.
 DEBUG_LOG="logs/ralph_debug_$(date +%s).log"
 exec 3>"$DEBUG_LOG"
 echo "### ralph.sh debug trace pid=$$ started $(date)" >&3
@@ -93,7 +93,7 @@ echo "### debug log: $DEBUG_LOG" >&3
 declare -A LAST_SHA
 log_sha256() {
     local label="$1"
-    for f in tasks.py test_tasks.py; do
+    for f in tasks.py; do
         p="workspace/$f"
         if [ -f "$p" ]; then
             sha=$(sha256sum "$p" | cut -d' ' -f1)
@@ -283,14 +283,13 @@ PY
 
         log_sha256 A_iter_start
 
-        # Pre-populate tasks.py / test_tasks.py from the last committed snapshot
-        # (which contains every done function's actual code). The model then
-        # reads this via read_file and only adds the current task's function,
+        # Pre-populate tasks.py from the last committed snapshot (which contains
+        # every done function, test, import and `main()`). The model then reads
+        # this via read_file and only adds the current task's function + test,
         # instead of overwriting the whole file and losing done work. The
         # post-write merge below is the backstop if it still overwrites.
         if git -C workspace rev-parse -q --verify HEAD >/dev/null 2>&1; then
             git -C workspace show HEAD:tasks.py > workspace/tasks.py 2>/dev/null || true
-            git -C workspace show HEAD:test_tasks.py > workspace/test_tasks.py 2>/dev/null || true
         fi
 
         log_sha256 B_prepop
@@ -342,10 +341,11 @@ if func_code:
 ```
 
 IMPLEMENTATION REQUIREMENT:
-Implement the function '{task['func']}' in workspace/tasks.py:
-- If workspace/tasks.py already has functions, READ IT FIRST with read_file
-- Write ALL existing functions PLUS this new one
-- DO NOT overwrite existing functions
+Implement the function '{task['func']}' (AND its test '{task['test']}') in the SINGLE file workspace/tasks.py:
+- If workspace/tasks.py already has content, READ IT FIRST with read_file
+- Re-write the ENTIRE file: ALL existing functions + their tests + the new function + its test + the `main()` dispatcher (keep `main()` verbatim from spec.md, do NOT edit it)
+- DO NOT drop existing functions or tests
+- Functions call each other directly by name (no `from tasks import ...`)
 - Use: write_file with path="workspace/tasks.py"
 
 '''
@@ -371,8 +371,8 @@ PY
         while [ "$ATT" -lt "$MAX_CODE_ATTEMPTS" ] && [ "$TASK_DONE" != "true" ] && [ "$TASK_FAILED" != "true" ]; do
             ATT=$((ATT + 1))
 
-            # If this is a retry, failure feedback (full current code + pytest
-            # output) is appended after pytest runs, in the failure block below.
+            # If this is a retry, failure feedback (full current code + test
+            # output) is appended after the test runs, in the failure block below.
             # No name-only feedback here.
 
             # If this is the final attempt and the test failed, mark as BLOCKER
@@ -486,17 +486,19 @@ PY
 
             log_sha256 C_post_model
 
-            # --- Post-write merge: protect done functions from overwrite ---
-            # The model tends to rewrite tasks.py / test_tasks.py with ONLY the
+            # --- Post-write merge: protect done code from overwrite ---
+            # The model tends to rewrite workspace/tasks.py with ONLY the
             # current function, deleting all previously done work. Merge the
-            # model's version of the current task back into the last committed
-            # version (which holds every done function + its imports). Runs on
-            # every attempt so done code can never be lost.
+            # model's version of the current task's function AND its test back
+            # into the last committed version (which holds every done function,
+            # test, import and `main()`). Runs on every attempt so done code can
+            # never be lost.
             python3 - "$TASK_FUNC" "$TASK_TEST" <<'PY' || true
 import subprocess, sys
 
 func_target = sys.argv[1]
 test_target = sys.argv[2]
+PATH = 'workspace/tasks.py'
 
 def git_show(path):
     # `path` is a filesystem path (e.g. 'workspace/tasks.py'); git lives in the
@@ -510,7 +512,8 @@ def git_show(path):
     return r.stdout
 
 def top_level_func_lines(code, name):
-    """Return lines of top-level def `name` from `code`, or None."""
+    """Return lines of top-level def `name` from `code`, or None. Handles
+    functions wrapped in a class (extracts the method at its own indentation)."""
     lines = code.split('\n')
     out = []
     in_func = False
@@ -526,6 +529,21 @@ def top_level_func_lines(code, name):
                 break
             out.append(line)
     return out if out else None
+
+def dedent(lines):
+    """Strip the common leading indentation so an extracted (possibly
+    class-wrapped) function sits at column 0 when re-inserted at module level."""
+    if not lines:
+        return lines
+    common = None
+    for l in lines:
+        if not l.strip():
+            continue
+        ind = len(l) - len(l.lstrip())
+        common = ind if common is None else min(common, ind)
+    if common:
+        lines = [l[common:] if l.startswith(' ' * common) else l for l in lines]
+    return lines
 
 def remove_top_level_func(lines, name):
     """Return list of lines with top-level def `name` removed."""
@@ -549,78 +567,100 @@ def remove_top_level_func(lines, name):
 def is_import(line):
     return line.strip().startswith(('import ', 'from '))
 
-def merge_file(path, target):
-    if not target:
-        return
-    committed = git_show(path)
-    if committed is None:
-        # No committed version yet (first task) - nothing to protect
-        return
+def append_blocks(base, blocks):
+    """Drop trailing blank lines, then append each block of lines with a
+    blank-line separator."""
+    while base and base[-1].strip() == '':
+        base.pop()
+    for block in blocks:
+        if not block:
+            continue
+        base.append('')
+        base.append('')
+        base.extend(block)
+
+committed = git_show(PATH)
+if committed is None:
+    # No committed version yet (first task) - nothing to protect
+    pass
+else:
     try:
-        with open(path) as f:
+        with open(PATH) as f:
             model = f.read()
     except FileNotFoundError:
-        return
+        model = ''
 
     committed_lines = committed.split('\n')
     model_lines = model.split('\n')
 
-    # Base = committed code minus the target function
-    base_lines = remove_top_level_func(committed_lines, target)
+    # Base = committed code minus the current task's function AND its test.
+    base_lines = remove_top_level_func(committed_lines, func_target)
+    base_lines = remove_top_level_func(base_lines, test_target)
 
     # Keep all committed imports, add any new ones the model introduced.
     # Reject self-imports (from tasks / import tasks) the model tends to write
-    # inside tasks.py itself - they cause a circular import at collection time.
-    committed_imports = [l for l in committed_lines if is_import(l)]
-    committed_import_set = set(committed_imports)
+    # inside tasks.py itself - they cause a circular import at runtime.
+    # Only consider TOP-LEVEL imports (column 0): imports nested inside a
+    # function body (e.g. `    import sys` inside `main`) must be ignored,
+    # otherwise they are wrongly treated as module imports and inserted in the
+    # wrong place. Compare against the stripped form so indented duplicates of
+    # an existing import are not re-added.
+    committed_imports = [l for l in committed_lines if l.startswith(('import ', 'from '))]
+    committed_import_set = set(l.strip() for l in committed_imports)
     new_imports = []
     for l in model_lines:
-        if not is_import(l) or l in committed_import_set:
+        if not l.startswith(('import ', 'from ')):
             continue
-        if l.strip().startswith(('from tasks ', 'import tasks')):
+        if l.strip() in committed_import_set:
+            continue
+        if l.strip().startswith(('from tasks', 'import tasks')):
             continue
         new_imports.append(l)
 
-    # Insert new imports right after the last existing import line
+    # Insert new imports right after the last top-level import line (ignore
+    # any imports nested inside function bodies).
     last_imp = -1
     for i, l in enumerate(base_lines):
-        if is_import(l):
+        if l.startswith(('import ', 'from ')):
             last_imp = i
     for ni in new_imports:
         base_lines.insert(last_imp + 1, ni)
         last_imp += 1
 
-    # Extract the model's (or committed) version of the target function
-    target_lines = top_level_func_lines(model, target)
-    if not target_lines:
-        target_lines = top_level_func_lines(committed, target) or []
+    # Extract the model's (falling back to committed) version of the task
+    # function and its test; dedent so class-wrapped methods land at col 0.
+    func_lines = dedent(top_level_func_lines(model, func_target)
+                        or top_level_func_lines(committed, func_target) or [])
+    test_lines = dedent(top_level_func_lines(model, test_target)
+                        or top_level_func_lines(committed, test_target) or [])
+    append_blocks(base_lines, [func_lines, test_lines])
 
-    # Drop trailing blank lines, then append the target function
-    while base_lines and base_lines[-1].strip() == '':
-        base_lines.pop()
-    if target_lines:
-        base_lines.append('')
-        base_lines.append('')
-        base_lines.extend(target_lines)
+    # Ensure `main()` survives: keep the committed one if present; otherwise
+    # lift it from the model (handles the Task 1 first-write edge case).
+    has_main = any(l.strip().startswith('def main(') for l in base_lines)
+    if not has_main:
+        main_lines = dedent(top_level_func_lines(model, 'main') or [])
+        if main_lines:
+            append_blocks(base_lines, [main_lines])
 
-    with open(path, 'w') as f:
+    with open(PATH, 'w') as f:
         f.write('\n'.join(base_lines) + '\n')
-    print(f"Merged {path}: preserved done functions, kept '{target}' from model")
-
-merge_file('workspace/tasks.py', func_target)
-merge_file('workspace/test_tasks.py', test_target)
+    print(f"Merged {PATH}: preserved done funcs/tests, kept '{func_target}' + '{test_target}'")
 PY
 
             log_sha256 D_post_merge
 
-            # Run pytest verification
+            # Run the task's verification
             echo "=== Running verification ===" | tee -a "$LOGFILE"
-            PYTEST_OUTPUT=$(python3 -m pytest workspace/test_tasks.py -k "$TASK_TEST" -v 2>&1 || true)
+            # Run the task's own test function via the module's main() dispatcher.
+            # Exit code 0 = pass; non-zero (e.g. assert failure / exception) = fail.
+            PYTEST_OUTPUT=$(python3 workspace/tasks.py "$TASK_TEST" 2>&1)
+            PYTEST_RC=$?
             echo "$PYTEST_OUTPUT" | tee -a "$LOGFILE"
 
-            log_sha256 E_post_pytest
+            log_sha256 E_post_verify
 
-            if echo "$PYTEST_OUTPUT" | grep -q "PASSED"; then
+            if [ "$PYTEST_RC" -eq 0 ]; then
                 echo "=== Test passed, marking task DONE ===" | tee -a "$LOGFILE"
                 python3 agent.py execute mark_task "{\"num\":$TASK_NUM,\"state\":\"done\"}" >> "$LOGFILE" 2>&1
                 log_sha256 F_post_mark
@@ -634,21 +674,19 @@ PY
 
                 # Capture current code for richer feedback
                 TASKS_PY_CONTENT="$(cat workspace/tasks.py 2>/dev/null || echo '')"
-                TESTS_PY_CONTENT="$(cat workspace/test_tasks.py 2>/dev/null || echo '')"
+                TESTS_PY_CONTENT=""
                 python3 - "$TASK_FUNC" "$TASK_TEST" "$TASKS_PY_CONTENT" "$TESTS_PY_CONTENT" "$PYTEST_OUTPUT" <<'PY'
 import sys
 task_func = sys.argv[1]
 task_test = sys.argv[2]
 tasks_py = sys.argv[3]
 tests_py = sys.argv[4]
-pytest_out = sys.argv[5]
+verify_out = sys.argv[5]
 with open('/tmp/ralph_prompt.txt','a') as f:
     f.write("\n\nPREVIOUS ATTEMPT FAILED. Here is the full current code:\n")
     f.write(f"\n=== workspace/tasks.py ===\n{tasks_py}\n")
-    if task_test:
-        f.write(f"\n=== workspace/test_tasks.py ===\n{tests_py}\n")
-    f.write(f"\n=== pytest output ===\n{pytest_out}\n")
-    f.write("\nFix the code and re-run pytest.\n")
+    f.write(f"\n=== test output (python3 workspace/tasks.py {task_test}) ===\n{verify_out}\n")
+    f.write(f"\nFix the code and re-run: python3 workspace/tasks.py {task_test}\n")
 PY
             fi
         done
@@ -663,7 +701,7 @@ import sys
 from agent import execute_debrief_task
 num = int(sys.argv[1])
 err = sys.argv[2][-800:]
-msg = f"Task exhausted all attempts without passing. Final pytest error:\n{err}"
+msg = f"Task exhausted all attempts without passing. Final test error:\n{err}"
 print(execute_debrief_task({"task_num": num, "what_was_confusing": msg,
                              "suggested_rule_for_prompt": "", "suggested_spec_clarification": ""}))
 PY

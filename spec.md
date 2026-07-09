@@ -1,12 +1,17 @@
 # SimpleSieve Setup & Validation
 
-You must create two Python files in the `workspace/` directory:
+You must create ONE Python file in the `workspace/` directory:
 
-1. **`tasks.py`** — one function per task below
-2. **`test_tasks.py`** — one pytest test function per task
+1. **`tasks.py`** — every function AND its test go in this single file.
 
-After writing each function and its test, run `pytest workspace/test_tasks.py -v` to validate.
-Only mark a task `[DONE]` when its corresponding pytest test passes.
+After writing each function and its test, run it directly as a script to
+validate: `python3 workspace/tasks.py <test_name>`. Only mark a task `[DONE]`
+when its test passes (the script exits 0).
+
+The file ends with a `main()` dispatcher (see the **Entry point** section) that
+runs whichever `test_*` function matches `sys.argv[1]`. `main()` auto-discovers
+test functions, so you only ever add `def test_*(...)` functions — you never
+edit the `main()` dispatch logic.
 
 ---
 
@@ -31,18 +36,16 @@ def clone_repo():
     return run(["git", "clone", "https://github.com/gilflorida2023/simplesieve", target])
 ```
 
-**Test:** `test_clone_repo()` in `test_tasks.py`
+**Test:** `test_clone_repo()` in `tasks.py`
 
 ```python
 def test_clone_repo():
-    import os
-    from tasks import clone_repo
     result = clone_repo()
     assert result.returncode == 0, f"git clone failed: {result.stderr}"
     assert os.path.isdir("workspace/simplesieve"), "Directory workspace/simplesieve does not exist"
 ```
 
-**Validation:** Run `pytest workspace/test_tasks.py::test_clone_repo -v`
+**Validation:** Run `python3 workspace/tasks.py test_clone_repo`
 **Done:** False
 
 ---
@@ -56,20 +59,21 @@ def get_project_dir():
     """Return the absolute path to the simplesieve project directory.
     This should be os.path.abspath('workspace/simplesieve').
     """
+    return os.path.abspath("workspace/simplesieve")
 ```
 
-**Test:** `test_get_project_dir()` in `test_tasks.py`
+**Test:** `test_get_project_dir()` in `tasks.py`
 
 ```python
 def test_get_project_dir():
     import os
-    from tasks import get_project_dir
+    clone_repo()  # Prerequisite: make sure the upstream repo is cloned first
     path = get_project_dir()
     assert os.path.isdir(path), f"Path does not exist: {path}"
     assert path.endswith("simplesieve"), f"Path does not end with simplesieve: {path}"
 ```
 
-**Validation:** Run `pytest workspace/test_tasks.py::test_get_project_dir -v`
+**Validation:** Run `python3 workspace/tasks.py test_get_project_dir`
 **Done:** False
 
 ---
@@ -84,14 +88,16 @@ def build_program():
     Use subprocess.run, set cwd to get_project_dir().
     Return the subprocess result.
     """
+    return run(["go", "build", "-o", "simplesieve"], cwd=get_project_dir())
 ```
 
-**Test:** `test_build_program()` in `test_tasks.py`
+**Test:** `test_build_program()` in `tasks.py`
 
 ```python
 def test_build_program():
     import os
-    from tasks import build_program, get_project_dir
+    from subprocess import run
+    clone_repo()  # Prerequisite: make sure the upstream repo is cloned first
     result = build_program()
     assert result.returncode == 0, f"go build failed: {result.stderr}"
     exe = os.path.join(get_project_dir(), "simplesieve")
@@ -99,7 +105,7 @@ def test_build_program():
     assert os.access(exe, os.X_OK), f"File is not executable: {exe}"
 ```
 
-**Validation:** Run `pytest workspace/test_tasks.py::test_build_program -v`
+**Validation:** Run `python3 workspace/tasks.py test_build_program`
 **Done:** False
 
 ---
@@ -114,16 +120,44 @@ def count_primes():
     it as a string.
     Use subprocess.run, set cwd to get_project_dir().
     """
+    result = run(["./simplesieve", "-c", "--limit", "1e6"], cwd=get_project_dir(),
+                 capture_output=True, text=True)
+    print(result.stdout, end="")
+    return result.stdout
 ```
 
-**Test:** `test_count_primes()` in `test_tasks.py`
+**Test:** `test_count_primes()` in `tasks.py`
 
 ```python
 def test_count_primes():
-    from tasks import count_primes
     output = count_primes()
     assert "78498" in output, f"Expected '78498' in output, got: {output}"
 ```
 
-**Validation:** Run `pytest workspace/test_tasks.py::test_count_primes -v`
+**Validation:** Run `python3 workspace/tasks.py test_count_primes`
 **Done:** False
+
+---
+
+## Entry point
+
+Every `tasks.py` must end with a `main()` dispatcher and an
+`if __name__ == "__main__"` block. `main()` auto-discovers any `test_*` function
+by name, so you NEVER edit the dispatch chain — just add `def test_*(...)` above
+it and call `main()` via `python3 workspace/tasks.py <test_name>`.
+
+```python
+def main():
+    import sys
+    name = sys.argv[1] if len(sys.argv) > 1 else ""
+    for fn, func in globals().items():
+        if fn.startswith("test_") and fn == name:
+            func()
+            return
+    print(f"Unknown test: {name}")
+    sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
+```
