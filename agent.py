@@ -162,7 +162,7 @@ def progress():
     print(json.dumps(result))
 
 
-def update_progress_file(num, done):
+def update_progress_file(num, state):
     tasks = load_tasks()
     task = None
     for t in tasks:
@@ -177,12 +177,11 @@ def update_progress_file(num, done):
     new_lines = []
     for line in lines:
         if desc in line:
-            new_lines.append(f"- [{'DONE' if done else 'TODO'}] {desc}\n")
+            new_lines.append(f"- [{state}] {desc}\n")
         else:
             new_lines.append(line)
     with open(PROGRESS_PATH, "w") as f:
         f.writelines(new_lines)
-    state = "DONE" if done else "TODO"
     return f"OK: Task {num} marked as {state}"
 
 
@@ -233,11 +232,11 @@ def execute_run_command(args):
 
 def execute_update_progress(args):
     num = int(args.get("num", 0))
-    done = args.get("done", "true") == "true"
+    state = args.get("state", "done")
     tasks = load_tasks()
     if num not in [t["num"] for t in tasks]:
         return f"ERROR: invalid task {num}"
-    return update_progress_file(num, done)
+    return update_progress_file(num, state)
 
 
 def execute_get_next_task(args):
@@ -261,7 +260,7 @@ def execute_mark_task(args):
     state = args.get("state", "done")
     
     done = state == "done"
-    result = update_progress_file(num, done)
+    result = update_progress_file(num, state)
     if "ERROR" in result:
         return f"ERROR: {result}"
     

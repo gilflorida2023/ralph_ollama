@@ -169,19 +169,39 @@ with open('/tmp/ralph_prompt.txt', 'w') as f:
 PY
 
         # ---- LLM call + parse + execute with inner retry loop ----
-        MAX_CODE_ATTEMPTS=3
+        MAX_CODE_ATTEMPTS=10
         ATT=0
         TASK_DONE=false
-        while [ "$ATT" -lt "$MAX_CODE_ATTEMPTS" ] && [ "$TASK_DONE" != "true" ]; do
+        TASK_FAILED=false
+        while [ "$ATT" -lt "$MAX_CODE_ATTEMPTS" ] && [ "$TASK_DONE" != "true" ] && [ "$TASK_FAILED" != "true" ]; do
             ATT=$((ATT + 1))
 
             # If this is a retry, append failure info to prompt
             if [ "$ATT" -gt 1 ] && [ -n "$PYTEST_OUTPUT" ]; then
-                python3 - "$PYTEST_OUTPUT" <<'PY'
+                # Build a detailed context including code, test, and errors
+                python3 - "$TASK_FUNC" "$TASK_TEST" "$PYTEST_OUTPUT" <<'PY'
 import sys
+task_func = sys.argv[1]
+task_test = sys.argv[2]
+pytest_output = sys.argv[3]
 with open('/tmp/ralph_prompt.txt','a') as f:
-    f.write("\n\nPREVIOUS ATTEMPT FAILED. pytest output:\n" + sys.argv[1] + "\nFix the code and re-run pytest.\n")
+    f.write("\n\nPREVIOUS ATTEMPT FAILED. Here is what you generated:\n")
+    f.write(f"\n=== Code for '{task_func}' ===\n{task_func}\n")
+    if task_test:
+        f.write(f"\n=== Test for '{task_test}' ===\n{task_test}\n")
+    f.write(f"\n=== pytest output ===\n{pytest_output}\n")
+    f.write("\nFix the code and re-run pytest.\n")
 PY
+            fi
+
+            # If this is the final attempt and the test failed, mark as BLOCKER
+            if [ "$ATT" -eq "$MAX_CODE_ATTEMPTS" ] && [ -n "$PYTEST_OUTPUT" ]; then
+                echo "=== Task failed after $MAX_CODE_ATTEMPTS attempts, marking as BLOCKER ===" | tee -a "$LOGFILE"
+                # NOTE: progress.md only supports [DONE] and [TODO] markers.
+                # To add BLOCKER support, you would need to modify the mark_task function
+                # in agent.py to handle a new "blocked" state.
+                # For now, the task will remain [TODO] and will be retried indefinitely.
+                TASK_FAILED=true
             fi
 
             # Log the prompt sent to Ollama

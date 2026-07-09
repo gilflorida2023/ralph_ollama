@@ -7,7 +7,7 @@ An autonomous Python agent that reads a task spec, executes tasks, validates the
 1. **`spec.md`** defines the tasks (markdown with function signatures and pytest tests)
 2. **`ralph.sh`** runs `agent.py` in a loop (up to 50 iterations)
 3. **`agent.py`** bootstraps `workspace/tasks.py` and `workspace/test_tasks.py` from templates, runs pytest, and auto-updates `progress.md`
-4. If tests fail, the LLM is asked to debug and fix the code
+4. If tests fail, the LLM is asked to debug and fix the code (with inner retry loop up to 10 attempts, feeding back generated code and test failures to improve the fix)
 5. The loop stops when all 4 tasks are `[DONE]` in `progress.md`
 
 ## Quick start
@@ -45,19 +45,11 @@ The LLM can call these 6 tools defined in `agent.py`:
 - **`read_file`** — read a project file (`{"path": ...}`)
 - **`write_file`** — write a file (`{"path": ..., "content": ...}`)
 - **`run_command`** — run a shell command (`{"cmd": ...}`), blocks dangerous commands
-- **`update_progress`** — mark a task done/TODO (`{"num": ..., "done": "true"/"false"}`)
+- **`update_progress`** — mark a task done/TODO (`{"num": ..., "state": "done"/"todo"}`)
 - **`get_next_task`** — return the next pending task
 - **`mark_task`** — mark a task done/blocked (`{"num": ..., "state": "done"}`)
 
 The LLM emits tool calls as a JSON object with a `tool_calls` array: `{"tool_calls": [{"name": "...", "args": {...}}]}`. `ralph.sh` normalizes legacy names (e.g., `run_shell` → `run_command`) and handles malformed JSON gracefully. With `-v/--verbose`, you also see the Ollama prompt and raw response.
-
-## How it works
-
-1. **`spec.md`** defines the tasks (markdown with function signatures and pytest tests)
-2. **`ralph.sh`** runs `agent.py` in a loop (up to 50 iterations)
-3. **`agent.py`** bootstraps `workspace/tasks.py` and `workspace/test_tasks.py` from templates, runs pytest, and auto-updates `progress.md`
-4. If tests fail, the LLM is asked to debug and fix the code (with inner retry loop up to 3 attempts)
-5. The loop stops when all 4 tasks are `[DONE]` in `progress.md`
 
 ## Workspace
 
