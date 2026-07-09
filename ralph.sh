@@ -81,6 +81,34 @@ LOGFILE="logs/ralph_$(date +%s).log"
 
 mkdir -p logs
 
+# --- File-change tracing (debug) ---
+# Open a SEPARATE debug log (never the main run log) on the real file system
+# under logs/ (NOT /tmp, which is a tmpfs / in-memory here) and record a
+# sha256 + size checkpoint of the two tracked files so we can see exactly
+# which harness step reverts / overwrites tasks.py or test_tasks.py.
+DEBUG_LOG="logs/ralph_debug_$(date +%s).log"
+exec 3>"$DEBUG_LOG"
+echo "### ralph.sh debug trace pid=$$ started $(date)" >&3
+echo "### debug log: $DEBUG_LOG" >&3
+declare -A LAST_SHA
+log_sha256() {
+    local label="$1"
+    for f in tasks.py test_tasks.py; do
+        p="workspace/$f"
+        if [ -f "$p" ]; then
+            sha=$(sha256sum "$p" | cut -d' ' -f1)
+            size=$(wc -c < "$p")
+            prev=${LAST_SHA[$f]:-}
+            flag=""
+            if [ -n "$prev" ] && [ "$prev" != "$sha" ]; then
+                flag="  <<< CHANGED vs previous"
+            fi
+            echo "[$label|iter:${ITER:-0}|att:${ATT:-0}] $f  sha256:$sha  size:$size$flag" >&3
+            LAST_SHA[$f]=$sha
+        fi
+    done
+}
+
 # Reset Ollama token accumulator for a fresh run
 echo '{"calls":0,"prompt_tokens":0,"completion_tokens":0}' > /tmp/ralph_token_usage.json
 # Record start epoch for elapsed-time reporting at loop exit
@@ -252,6 +280,8 @@ PY
             fi
         fi
 
+        log_sha256 A_iter_start
+
         # Pre-populate tasks.py / test_tasks.py from the last committed snapshot
         # (which contains every done function's actual code). The model then
         # reads this via read_file and only adds the current task's function,
@@ -261,6 +291,8 @@ PY
             git -C workspace show HEAD:tasks.py > workspace/tasks.py 2>/dev/null || true
             git -C workspace show HEAD:test_tasks.py > workspace/test_tasks.py 2>/dev/null || true
         fi
+
+        log_sha256 B_prepop
 
         # Safety net: remove any stray clone that landed at the project root
         # (a clone_repo that omitted the explicit workspace/simplesieve target
@@ -451,6 +483,8 @@ for call in normalized:
 print('Step complete.')
 PY
 
+            log_sha256 C_post_model
+
             # --- Post-write merge: protect done functions from overwrite ---
             # The model tends to rewrite tasks.py / test_tasks.py with ONLY the
             # current function, deleting all previously done work. Merge the
@@ -576,17 +610,23 @@ merge_file('workspace/tasks.py', func_target)
 merge_file('workspace/test_tasks.py', test_target)
 PY
 
+            log_sha256 D_post_merge
+
             # Run pytest verification
             echo "=== Running verification ===" | tee -a "$LOGFILE"
             PYTEST_OUTPUT=$(python3 -m pytest workspace/test_tasks.py -k "$TASK_TEST" -v 2>&1 || true)
             echo "$PYTEST_OUTPUT" | tee -a "$LOGFILE"
 
+            log_sha256 E_post_pytest
+
             if echo "$PYTEST_OUTPUT" | grep -q "PASSED"; then
                 echo "=== Test passed, marking task DONE ===" | tee -a "$LOGFILE"
                 python3 agent.py execute mark_task "{\"num\":$TASK_NUM,\"state\":\"done\"}" >> "$LOGFILE" 2>&1
+                log_sha256 F_post_mark
                 # Snapshot the successful state in the workspace git repo
                 git -C workspace add -A
                 git -C workspace commit -q -m "Task $TASK_NUM: $TASK_TITLE done" || true
+                log_sha256 G_post_commit
                 TASK_DONE=true
             else
                 echo "=== Test failed, adding feedback and retrying ===" | tee -a "$LOGFILE"
