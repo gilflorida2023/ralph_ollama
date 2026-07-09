@@ -273,6 +273,61 @@ def execute_mark_task(args):
     return f"OK: Task {num} marked as {state}"
 
 
+def execute_debrief_task(args):
+    """Called by the model as its LAST action after a task passes (or after it
+    gives up). Records the model's reflection + suggestions into progress.md
+    (inline under the task's marker) and appends to workspace/lessons.md so the
+    knowledge accumulates across runs for the vertical market.
+
+    Expected args (semi-structured):
+        task_num, what_was_confusing, suggested_rule_for_prompt,
+        suggested_spec_clarification
+    """
+    num = int(args.get("task_num", 0))
+    confusing = (args.get("what_was_confusing") or "").strip()
+    prompt_rule = (args.get("suggested_rule_for_prompt") or "").strip()
+    spec_clar = (args.get("suggested_spec_clarification") or "").strip()
+
+    # --- 1) Inline record in progress.md (sub-items under the task line) ---
+    tasks = load_tasks()
+    title = ""
+    for t in tasks:
+        if t["num"] == num:
+            title = t["title"]
+            break
+    if title:
+        lines = []
+        with open(PROGRESS_PATH) as f:
+            lines = f.readlines()
+        desc = f"Task {num}: {title}"
+        new_lines = []
+        for line in lines:
+            new_lines.append(line)
+            if desc in line:
+                if confusing:
+                    new_lines.append(f"    - Reflection: {confusing}\n")
+                if prompt_rule:
+                    new_lines.append(f"    - Suggestion (prompt.md): {prompt_rule}\n")
+                if spec_clar:
+                    new_lines.append(f"    - Suggestion (spec.md): {spec_clar}\n")
+        with open(PROGRESS_PATH, "w") as f:
+            f.writelines(new_lines)
+
+    # --- 2) Accumulate into lessons.md (one block per debrief) ---
+    today = __import__("datetime").date.today().isoformat()
+    with open(os.path.join(WORKSPACE, "lessons.md"), "a") as f:
+        f.write(f"## Task {num}: {title} ({today})\n")
+        if confusing:
+            f.write(f"- Confusing: {confusing}\n")
+        if prompt_rule:
+            f.write(f"- Suggested prompt.md rule: {prompt_rule}\n")
+        if spec_clar:
+            f.write(f"- Suggested spec.md clarification: {spec_clar}\n")
+        f.write("\n")
+
+    return "OK: debrief recorded"
+
+
 TOOLS = {
     "read_file": execute_read_file,
     "write_file": execute_write_file,
@@ -280,6 +335,7 @@ TOOLS = {
     "update_progress": execute_update_progress,
     "get_next_task": execute_get_next_task,
     "mark_task": execute_mark_task,
+    "debrief_task": execute_debrief_task,
 }
 
 

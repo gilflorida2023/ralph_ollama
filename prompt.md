@@ -31,6 +31,11 @@ Do NOT stop after just writing files. You MUST run pytest in the same response.
 - Run commands (including pytest) through the `run_command` tool with args {"cmd": "..."}.
 - The harness runs the test and marks the task DONE automatically. You do NOT need to mark progress yourself.
 - If a test fails, the harness gives you **detailed feedback** including the full current `workspace/tasks.py` and `workspace/test_tasks.py` content, plus the pytest output. You have **up to 10 retry attempts** to fix the task.
+- After your test PASSES (or on your FINAL retry if it still fails), you MUST call `debrief_task` as your VERY LAST tool call. Reflect honestly on what was difficult or confusing and suggest concrete improvements:
+  - `what_was_confusing`: what about the task/spec/prompt was unclear or caused wasted attempts
+  - `suggested_rule_for_prompt`: a concrete new rule to add to this prompt that would prevent the mistake
+  - `suggested_spec_clarification`: a concrete change to spec.md that would make the task unambiguous
+  This is how the system learns from each run; never skip it.
 - After 10 failed attempts, the task is marked as BLOCKER and the Ralph loop stops processing further tasks.
 - Tests import from `tasks` (e.g. `from tasks import clone_repo`), because pytest runs from the project root with `workspace/test_tasks.py`.
 - `clone_repo` must be **idempotent** and must clone into `workspace/simplesieve` with an **explicit relative target**: `run(["git", "clone", "https://github.com/gilflorida2023/simplesieve", "workspace/simplesieve"])`. Never run `git clone` without the `workspace/simplesieve` argument (that would clone into the current working directory instead of the workspace). If `workspace/simplesieve` already exists, remove it first (e.g. `shutil.rmtree('workspace/simplesieve')`) so the clone never fails with "destination path already exists".

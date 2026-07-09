@@ -180,7 +180,10 @@ PY
                 git -C workspace diff | tee -a "$LOGFILE"
                 git -C workspace log --oneline -3 | tee -a "$LOGFILE"
                 git -C workspace checkout -- .
-                git -C workspace clean -fd
+                # -fdx (not -fd) so gitignored dirs like workspace/simplesieve/
+                # are also removed between iterations; otherwise stale clones
+                # persist and clone_repo() re-clones every time.
+                git -C workspace clean -fdx
                 echo "=== Reverted to last committed baseline ===" | tee -a "$LOGFILE"
             fi
         fi
@@ -196,16 +199,31 @@ PY
 
         # Build the prompt for the task and write to /tmp/ralph_prompt.txt
         python3 - "$NEXT_TASK_JSON" <<'PY'
-import json, sys
+import json, sys, os
 
 task = json.loads(sys.argv[1])
 
 with open('prompt.md') as f:
     system = f.read().strip()
 
+# Accumulated lessons from previous runs (the self-improving knowledge base).
+lessons_path = 'workspace/lessons.md'
+lessons = ''
+if os.path.isfile(lessons_path):
+    with open(lessons_path) as f:
+        lessons = f.read().strip()
+
 prompt = f'''{system}
 
-Implement this task: Task {task['num']}: {task['title']}
+'''
+
+if lessons:
+    prompt += f'''## Lessons learned from previous tasks (apply these!)
+{lessons}
+
+'''
+
+prompt += f'''Implement this task: Task {task['num']}: {task['title']}
 
 Implement the function '{task['func']}' from tasks.py:
 '''
@@ -229,7 +247,7 @@ prompt += f'''Now implement this task. What tool calls should we make?
 
 IMPORTANT: We need to implement function '{task['func']}' and potentially write a test for '{task['test']}' if it exists.
 
-The tools available are: read_file, write_file, run_command, update_progress, get_next_task
+The tools available are: read_file, write_file, run_command, update_progress, get_next_task, debrief_task
 
 Recommendation: First check if the function exists in tasks.py (use read_file), then if not create it (use write_file)
 '''
@@ -387,6 +405,22 @@ with open('/tmp/ralph_prompt.txt','a') as f:
 PY
             fi
         done
+
+            # BLOCKER fallback: if the model never called debrief_task on its
+            # final attempt (it can't know it was the last), auto-record a
+            # concise debrief from the final error so the lesson is not lost.
+            if [ "$TASK_FAILED" = true ] && ! echo "$PROMPT_RESPONSE" | grep -q "debrief_task"; then
+                echo "=== Auto-recording blocker debrief for Task $TASK_NUM ===" | tee -a "$LOGFILE"
+                python3 - "$TASK_NUM" "$PYTEST_OUTPUT" <<'PY' >> "$LOGFILE" 2>&1
+import sys
+from agent import execute_debrief_task
+num = int(sys.argv[1])
+err = sys.argv[2][-800:]
+msg = f"Task exhausted all attempts without passing. Final pytest error:\n{err}"
+print(execute_debrief_task({"task_num": num, "what_was_confusing": msg,
+                             "suggested_rule_for_prompt": "", "suggested_spec_clarification": ""}))
+PY
+            fi
     fi
 
     sleep 1
