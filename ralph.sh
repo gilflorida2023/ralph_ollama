@@ -314,7 +314,7 @@ def normalize_tool_calls(raw):
     tool_calls = r.get('tool_calls', [])
     if not tool_calls:
         tool_name = r.get('tool') or r.get('tool_to_use') or r.get('action')
-        if tool_name and tool_name not in ('done', 'write_function', 'write_test', 'run_pytest', 'get_next_task'):
+        if tool_name and tool_name not in ('done', 'write_function', 'write_test', 'run_pytest'):
             args = {k: v for k, v in r.items() if k not in ('tool', 'tool_to_use', 'action', 'reasoning', 'next_progress_update')}
             tool_calls = [{'name': tool_name, 'args': args}]
     normalized = []
@@ -339,7 +339,7 @@ if err:
     print(f"PARSE ERROR: {err}")
     sys.exit(0)
 
-ALLOWED = {'read_file', 'write_file', 'run_command', 'debrief_task'}
+ALLOWED = {'read_file', 'write_file', 'run_command', 'debrief_task', 'mark_task', 'get_next_task'}
 for call in normalized:
     name = call['name']
     args = call['args']
@@ -351,6 +351,13 @@ for call in normalized:
                             capture_output=True, text=True, timeout=130)
     print(f"  -> {result.stdout.strip()[:200]}")
 PY
+
+        # --- Check if model already marked task done via tool call ---
+        if grep -q "\[DONE\] Task $TASK_NUM:" workspace/progress.md 2>/dev/null || grep -q "\[BLOCKED\] Task $TASK_NUM:" workspace/progress.md 2>/dev/null; then
+            echo "=== Model marked task done/blocked via tool call ===" | tee -a "$LOGFILE"
+            TASK_DONE=true
+            continue
+        fi
 
         # --- 4. validate via pytest ---
         echo "=== Running validation (pytest) ===" | tee -a "$LOGFILE"

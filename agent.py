@@ -229,6 +229,13 @@ def execute_mark_task(args):
     with open(TASKS_JSON, "w") as f:
         json.dump(tasks, f, indent=2)
 
+    # Save snapshot of current tasks.py so next task starts from this state
+    snapshot_path = os.path.join(WORKSPACE, ".ralph_good_state")
+    tasks_path = os.path.join(WORKSPACE, "tasks.py")
+    if os.path.isfile(tasks_path):
+        import shutil
+        shutil.copy(tasks_path, snapshot_path)
+
     return f"OK: Task {num} marked as {state}"
 
 

@@ -44,7 +44,9 @@ single file, in this order:
 - A test passes when `python3 -m pytest workspace/tasks.py -k test_NAME -v` exits with code 0 (a failing `assert` raises and makes the script exit non-zero).
 - All file writes go through the `write_file` tool with args {"path": ..., "content": ...}.
 - Run commands go through the `run_command` tool with args {"cmd": "..."}.
-- The harness runs the test and marks the task DONE automatically. You do NOT need to mark progress yourself.
+- Use `get_next_task` to see which task is next. Returns `{"done": true}` if all tasks are complete.
+- Use `mark_task` to mark a task done or blocked after your test passes. Arguments: `{"num": <task_number>, "state": "done"|"blocked"}`.
+- The harness runs the test and marks the task DONE automatically. You do NOT need to mark progress yourself (but `mark_task` is available if you want to do it manually).
 - If a test fails, the harness gives you **detailed feedback** including the full current `workspace/tasks.py` content plus the script output. You have **up to 10 retry attempts** to fix the task.
 - After your test PASSES (or on your FINAL retry if it still fails), you MUST call `debrief_task` as your VERY LAST tool call. Reflect honestly on what was difficult or confusing and suggest concrete improvements:
   - `what_was_confusing`: what about the task/spec/prompt was unclear or caused wasted attempts
