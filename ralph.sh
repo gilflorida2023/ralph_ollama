@@ -1,137 +1,415 @@
 #!/bin/bash
-# Ralph Wiggum loop: restore done code, validate, store new code
+# Ralph Wiggum loop: restore done code, validate with pytest, store new code
 
 set -euo pipefail
+
+# Pin cwd to the script's directory
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
-# Environment variable storing all previously done code
-RALPH_DONE_FILE="/tmp/ralph_done_code.txt"
+# Use the project's virtualenv (it has python deps) instead of system python3.
+if [ -f venv/bin/activate ]; then
+    # shellcheck disable=SC1091
+    source venv/bin/activate
+fi
+
+# Kill any PREVIOUS ralph.sh run still lingering (e.g., a stuck `--clean 50`
+# from an earlier session). A leftover run holds the GPU/model and makes new
+# Ollama chat calls hang indefinitely.
+#
+# IMPORTANT implementation notes (learned the hard way):
+#  * Run this INLINE in the main shell. A `bash -c` / `timeout bash -c`
+#    subshell would itself match `pgrep -f "ralph\.sh"` (its own cmdline
+#    literally contains "ralph.sh") and kill ITSELF instead of the stale run.
+#  * `pgrep -f "ralph\.sh"` ALSO matches our own launcher chain (the tool
+#    shell, `timeout`, etc. all have "ralph.sh" in their command line). We must
+#    skip $$ AND every ancestor (parent, grandparent, ...), otherwise we kill
+#    the very shell that launched us and the run hangs.
+#  * Do NOT use `pkill -P` here: it hangs in this environment. `ps --ppid` is
+#    safe for listing children.
+SELF=$$
+ANCESTORS="$SELF"
+p=$PPID
+while [ -n "$p" ] && [ "$p" != "0" ]; do
+    ANCESTORS="$ANCESTORS $p"
+    p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')
+done
+for pid in $(pgrep -f "ralph\.sh" 2>/dev/null || true); do
+    skip=0
+    for a in $ANCESTORS; do
+        [ "$pid" = "$a" ] && skip=1 && break
+    done
+    [ "$skip" = 1 ] && continue
+    echo "=== Killing previous ralph.sh process (pid $pid) ===" >&2
+    for cpid in $(ps -o pid= --ppid "$pid" 2>/dev/null); do
+        kill "$cpid" 2>/dev/null || true
+    done
+    kill "$pid" 2>/dev/null || true
+done
+
+# --- Arguments ---
+MAX_ITERATIONS=50
+VERBOSE=false
+CLEAN=false
+MODEL_NAME='qwen2.5:7b'
+# Accepts either order: `ralph.sh 3 -v` or `ralph.sh -v 3`.
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -v|--verbose) VERBOSE=true ;;
+        --clean) CLEAN=true ;;
+        -*) echo "Unknown option: $1" >&2; exit 1 ;;
+        *)
+            if [[ "$1" =~ ^[0-9]+$ ]]; then
+                MAX_ITERATIONS=$1
+            else
+                echo "Invalid iteration count: $1 (expected a number)" >&2
+                exit 1
+            fi
+            ;;
+    esac
+    shift
+done
+
+ITER=0
+LOGFILE="logs/ralph_$(date +%s).log"
+mkdir -p logs
+
+# --- Done-code snapshot (manages progress without git) ---
+RALPH_DONE_FILE="workspace/.ralph_good_state"
+RALPH_DONE_CODE=""
 if [ -f "$RALPH_DONE_FILE" ]; then
     RALPH_DONE_CODE=$(cat "$RALPH_DONE_FILE")
 fi
 
-# Clean start: reset done code
-RALPH_CLEAN_START=false
-if [[ "${1:-}" == "--clean" ]]; then
-    if [[ "${2:-}" == "*" ]]; then
-        MAX_ITERS="${2:-}"
-    else
-        MAX_ITERS=50
-    fi
-    # Clean start
-    rm -f workspace/tasks.py "$RALPH_DONE_FILE" workspace/tasks.json workspace/progress.md
+# Setup workspace from agent.py; --clean forces a fresh start.
+if [ "$CLEAN" = true ]; then
+    echo "=== Clean start: running agent.py setup ==="
     python3 agent.py setup
-    unset RALPH_DONE_CODE
-    RALPH_CLEAN_START=true
+    rm -f workspace/tasks.py "$RALPH_DONE_FILE"
 else
-    # Continue existing run
     if [ ! -f workspace/tasks.json ]; then
         python3 agent.py setup
     fi
+    if [ "$VERBOSE" = true ]; then
+        echo "=== Continuing existing run (skipping agent.py setup) ==="
+    fi
 fi
 
-MAX_ITERS="${MAX_ITERS:-50}"
+# --- Token accumulator + elapsed-time reporting ---
+echo '{"calls":0,"prompt_tokens":0,"completion_tokens":0}' > /tmp/ralph_token_usage.json
+RALPH_START_EPOCH=$(date +%s)
 
-# Main loop
-for ITER in $(seq 1 "$MAX_ITERS"); do
-    echo "=== Iteration $ITER ==="
+print_summary() {
+    if [ -f /tmp/ralph_token_usage.json ]; then
+        python3 - /tmp/ralph_token_usage.json "${RALPH_START_EPOCH:-$(date +%s)}" "$MODEL_NAME" <<'PY' 2>&1 | tee -a "$LOGFILE"
+import json, sys, time
+with open(sys.argv[1]) as f:
+    u = json.load(f)
+start = int(sys.argv[2])
+model = sys.argv[3]
+elapsed = int(time.time()) - start
+h = elapsed // 3600
+m = (elapsed % 3600) // 60
+s = elapsed % 60
+if h:
+    elapsed_str = f"{h}:{m:02d}:{s:02d}"
+elif m:
+    elapsed_str = f"{m}:{s:02d}"
+else:
+    elapsed_str = f"{s}"
+c = u['calls']
+pt = u['prompt_tokens']
+ct = u['completion_tokens']
+tt = pt + ct
+print("=== Summary ===")
+print(f"  Model Name:        {model}")
+print(f"  Elapsed time:      {elapsed_str}")
+print(f"  Ollama calls:      {c}")
+if c:
+    print(f"  Prompt tokens:     {pt}  (avg {pt//c}/call)")
+    print(f"  Completion tokens: {ct}  (avg {ct//c}/call)")
+    print(f"  Total tokens:      {tt}  (avg {tt//c}/call)")
+print("================")
+PY
+    fi
+}
+trap print_summary EXIT
 
-    # Get next task
+echo "=== Starting Ralph Wiggum Loop for Ollama ==="
+echo "Press Ctrl+C to stop. Max iterations: $MAX_ITERATIONS"
+[ "$VERBOSE" = true ] && echo "=== VERBOSE MODE ==="
+
+while [ "$ITER" -lt "$MAX_ITERATIONS" ]; do
+    ITER=$((ITER + 1))
+    echo "=== Iteration $ITER ===" | tee -a "$LOGFILE"
+
+    # --- 1. next_task ---
     NEXT_TASK_JSON=$(python3 - <<'PY'
 import json
 import sys
 sys.path.insert(0, '.')
-from agent import next_task
-print(json.dumps({"done": True}))
+from agent import find_next_task
+t = find_next_task()
+print(json.dumps({"done": True}) if t is None else json.dumps(t))
 PY
 )
 
     if echo "$NEXT_TASK_JSON" | grep -q '"done": true'; then
-        echo "All tasks completed!"
+        STUCK=$(python3 - <<'PY'
+import sys, json
+sys.path.insert(0, '.')
+from agent import load_tasks, load_progress
+p = load_progress()
+print('stuck' if any(not p.get(t['num'], False) for t in load_tasks()) else 'done')
+PY
+)
+        if [ "$STUCK" = "stuck" ]; then
+            echo "⚠️  No available task — some tasks are BLOCKED. Stopping." | tee -a "$LOGFILE"
+        else
+            echo "🎉 All tasks complete! Stopping." | tee -a "$LOGFILE"
+        fi
         break
     fi
 
     TASK_NUM=$(echo "$NEXT_TASK_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['num'])")
     TASK_TITLE=$(echo "$NEXT_TASK_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['title'])")
     TASK_FUNC=$(echo "$NEXT_TASK_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('func', ''))")
+    TASK_TEST=$(echo "$NEXT_TASK_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('test', ''))")
+    TASK_DEPS=$(echo "$NEXT_TASK_JSON" | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin).get('depends_on', [])))")
 
-    echo "Working on Task $TASK_NUM: $TASK_TITLE"
+    echo "🎯 Working on Task $TASK_NUM: $TASK_TITLE (function: $TASK_FUNC, test: $TASK_TEST, deps: $TASK_DEPS)" | tee -a "$LOGFILE"
 
-    # Restore previously done code (current state)
+    # --- 2. restore done code (last successful snapshots) ---
     if [ -n "$RALPH_DONE_CODE" ]; then
         echo "$RALPH_DONE_CODE" > workspace/tasks.py
+        echo "=== Restored done code from snapshot ===" | tee -a "$LOGFILE"
     elif [ ! -f workspace/tasks.py ]; then
         : > workspace/tasks.py
+        echo "=== Created empty workspace/tasks.py ===" | tee -a "$LOGFILE"
     fi
 
-    # Build prompt for this task
-    python3 - "$TASK_NUM" "$TASK_TITLE" "$TASK_FUNC" <<'PY'
-import json, sys, os
-from datetime import datetime
+    # Remove any stray project-root clone (a clone_repo without explicit workspace/
+    # target would create ./simplesieve here and break downstream tasks that
+    # explicitly target workspace/simplesieve). The legitimate clone always lives
+    # in workspace/simplesieve per spec.md.
+    if [ -e simplesieve ]; then
+        echo "=== Removing stray project-root clone ./simplesieve ===" | tee -a "$LOGFILE"
+        rm -rf simplesieve
+    fi
 
-task_num = int(sys.argv[1])
-task_title = sys.argv[2]
-task_func = sys.argv[3]
+    # Build prompt for this task, including reference implementation + tests from spec.md
+    python3 - "$NEXT_TASK_JSON" "$TASK_DEPS" <<'PY'
+import json, sys, re
 
-# Read existing prompt
-with open('prompt.md', 'r') as f:
-    system = f.read()
+task = json.loads(sys.argv[1])
+deps = json.loads(sys.argv[2])
 
-# Add task-specific prompt
+with open('prompt.md') as f:
+    system = f.read().strip()
+
+# Inject the reference implementation and test from spec.md so the model sees
+# the exact API and behavior it must produce, rather than guessing.
+with open('spec.md') as f:
+    spec = f.read().strip()
+m = re.search(r'## Task ' + str(task['num']) + r':.*?```python\s*\n(.*?)```\s*\n\*\*Test:\*\*.*?```python\s*\n(.*?)```', spec, re.DOTALL)
+func_code = m.group(1).strip() if m else ''
+test_code = m.group(2).strip() if m else ''
+
 prompt = f'''{system}
 
-Task {task_num}: {task_title}
+Implement this task: Task {task['num']}: {task['title']}
 
-Implement the function '{task_func}' in tasks.py:
-
-1. Read tasks.py
-2. Add this function and its test
-3. Run: python3 workspace/tasks.py test_$task_func
-
-Keep all existing code.
+Implement the function '{task['func']}' (AND its test '{task['test']}') in workspace/tasks.py:
+- Read workspace/tasks.py first - existing functions are already there.
+- Add ONLY the new function and its test.
+- Re-write the ENTIRE file preserving all existing code (do NOT drop done functions).
+- Keep main() at the bottom exactly as in spec.md.
 '''
+if func_code:
+    prompt += f'''Use this exact reference implementation:
+```python
+{func_code}
+```
 
+'''
+if test_code:
+    prompt += f'''Use this exact reference test (calls any prerequisites already present in tasks.py):
+```python
+{test_code}
+```
+
+'''
+if deps:
+    try:
+        tasks_list = json.load(open('workspace/tasks.json'))
+    except Exception:
+        tasks_list = []
+    dep_lines = []
+    for d in deps:
+        for t in tasks_list:
+            if t['num'] == d:
+                dep_lines.append(f"  - Task {d}: {t['title']} (function {t['func']}() already exists in tasks.py)")
+    if dep_lines:
+        prompt += "This task depends on (already implemented - call them directly by name):\n"
+        prompt += "\n".join(dep_lines) + "\n\n"
+
+prompt += f'''Now implement this task. Steps:
+1. read_file workspace/tasks.py (see what is already there)
+2. write_file workspace/tasks.py (add {task['func']} + {task['test']}, keep main())
+3. run_command with cmd="python3 -m pytest workspace/tasks.py -k {task['test']} -v" to validate
+4. If the test fails, fix with write_file and re-run this command.
+'''
 with open('/tmp/ralph_prompt.txt', 'w') as f:
     f.write(prompt)
 PY
 
-    # Get model response
-    curl -s "http://localhost:11434/api/chat" \
-         -d "{\"model\":\"qwen2.5:7b\", \"messages\":[{\"role\":\"user\", \"content\":\"$(cat /tmp/ralph_prompt.txt | sed 's/\\/\\\\/g; s/\"/\\\"/g')\"}]" \
-         | jq -r '.message.content // ""' > /tmp/ralph_response.txt
+    # --- 3. inner retry loop (up to 10 attempts) ---
+    MAX_ATTEMPTS=10
+    ATT=0
+    TASK_DONE=false
+    PYTEST_OUTPUT=""
+    while [ "$ATT" -lt "$MAX_ATTEMPTS" ] && [ "$TASK_DONE" != "true" ]; do
+        ATT=$((ATT + 1))
+        # On retry: restore the last good snapshot so the model starts from known state
+        if [ "$ATT" -gt 1 ] && [ -n "$RALPH_DONE_CODE" ]; then
+            echo "$RALPH_DONE_CODE" > workspace/tasks.py
+            echo "=== Restored done code from snapshot for retry $ATT ===" | tee -a "$LOGFILE"
+        fi
 
-    # Execute model response
-    python3 <<'PY'
-import json
-import subprocess
-import sys
+        if [ "$VERBOSE" = true ]; then
+            echo "=== DEBUG: Prompt sent to Ollama (attempt $ATT) ===" | tee -a "$LOGFILE"
+            cat /tmp/ralph_prompt.txt | tee -a "$LOGFILE"
+            echo "=== END PROMPT ===" | tee -a "$LOGFILE"
+        fi
 
-response_file = "/tmp/ralph_response.txt"
-with open(response_file, 'r') as f:
-    response = f.read()
+        # Call Ollama via jq+Ollama API (robust - no sed escaping)
+        PROMPT_RESPONSE=$(
+            jq -Rs --arg model "$MODEL_NAME" \
+                '{model: $model, messages: [{role: "user", content: .}], format: "json", stream: false, options: {temperature: 0.7}}' \
+                /tmp/ralph_prompt.txt \
+            | curl -s http://localhost:11434/api/chat -d @- \
+            | tee /tmp/ralph_last_response.json \
+            | jq -r '.message.content // ""'
+        )
 
-# Try to parse tool calls
-if '"tool_calls"' in response:
-    data = json.loads(response)
-    for call in data.get('tool_calls', []):
-        name = call.get('name', '')
-        args = call.get('args', {})
-        if name in ['read_file', 'write_file', 'run_command']:
-            subprocess.run(['python3', 'agent.py', 'execute', name, json.dumps(args)])
+        # Accumulate token usage
+        python3 - /tmp/ralph_token_usage.json /tmp/ralph_last_response.json <<'PY' || true
+import json, sys
+with open(sys.argv[1]) as a_f, open(sys.argv[2]) as r_f:
+    a = json.load(a_f)
+    r = json.load(r_f)
+a['calls'] += 1
+if 'message' in r and 'content' in r['message']:
+    pass
 else:
-    print("No tool calls found in response")
+    if 'prompt_eval_count' in r:
+        a['prompt_tokens'] += r['prompt_eval_count']
+    if 'eval_count' in r:
+        a['completion_tokens'] += r['eval_count']
+json.dump(a, open(sys.argv[1], 'w'))
 PY
 
-    # Validate the task
-    echo "Validating..."
-    python3 workspace/tasks.py test_$TASK_FUNC
+        if [ "$VERBOSE" = true ]; then
+            echo "=== DEBUG: Raw Ollama response (attempt $ATT) ===" | tee -a "$LOGFILE"
+            echo "$PROMPT_RESPONSE" | tee -a "$LOGFILE"
+            echo "=== END RESPONSE ===" | tee -a "$LOGFILE"
+        else
+            echo "LLM response: $PROMPT_RESPONSE" >> "$LOGFILE"
+        fi
 
-    # Validation passed - update progress and store code
-    python3 agent.py execute mark_task "{\"num\":$TASK_NUM,\"state\":\"done\"}"
-    RALPH_DONE_CODE=$(cat workspace/tasks.py)
-    echo "$RALPH_DONE_CODE" > "$RALPH_DONE_FILE"
+        # Parse + execute tool calls, ALLOWED = read_file/write_file/run_command/debrief_task
+        python3 - "$PROMPT_RESPONSE" <<'PY' 2>&1
+import json, subprocess, sys, re
 
-    echo "Task $TASK_NUM completed successfully"
+raw = sys.argv[1] if len(sys.argv) > 1 else ""
+
+def normalize_tool_calls(raw):
+    try:
+        r = json.loads(raw)
+    except json.JSONDecodeError as e:
+        return [], f"JSON decode error: {e}"
+    tool_calls = r.get('tool_calls', [])
+    if not tool_calls:
+        tool_name = r.get('tool') or r.get('tool_to_use') or r.get('action')
+        if tool_name and tool_name not in ('done', 'write_function', 'write_test', 'run_pytest', 'get_next_task'):
+            args = {k: v for k, v in r.items() if k not in ('tool', 'tool_to_use', 'action', 'reasoning', 'next_progress_update')}
+            tool_calls = [{'name': tool_name, 'args': args}]
+    normalized = []
+    for call in tool_calls:
+        if not isinstance(call, dict):
+            print(f"SKIP (not dict): {call}")
+            continue
+        name = call.get('name') or call.get('function') or call.get('tool') or ''
+        if not name:
+            print(f"SKIP (nameless): {call}")
+            continue
+        if name in ('run_shell', 'shell'):
+            name = 'run_command'
+        args = call.get('args') or call.get('parameters') or {}
+        normalized.append({'name': name, 'args': args})
+    if not normalized:
+        return [], "No valid tool calls"
+    return normalized, None
+
+normalized, err = normalize_tool_calls(raw)
+if err:
+    print(f"PARSE ERROR: {err}")
+    sys.exit(0)
+
+ALLOWED = {'read_file', 'write_file', 'run_command', 'debrief_task'}
+for call in normalized:
+    name = call['name']
+    args = call['args']
+    print(f"Tool: {name}({json.dumps(args)})")
+    if name not in ALLOWED:
+        print(f"Tool {name} -> BLOCKED (not permitted for model)")
+        continue
+    result = subprocess.run(['python3', 'agent.py', 'execute', name, json.dumps(args)],
+                            capture_output=True, text=True, timeout=130)
+    print(f"  -> {result.stdout.strip()[:200]}")
+
+print('Step complete.')
+PY
+
+        # --- 4. validate via pytest ---
+        echo "=== Running validation (pytest) ===" | tee -a "$LOGFILE"
+        # Do NOT let `set -e` abort the script on a failing test; capture rc.
+        PYTEST_OUTPUT=$(python3 -m pytest workspace/tasks.py -k "$TASK_TEST" -v --tb=short 2>&1) || PYTEST_RC=$?
+        PYTEST_RC=${PYTEST_RC:-0}
+        echo "$PYTEST_OUTPUT" | tee -a "$LOGFILE"
+
+        if [ "$PYTEST_RC" -eq 0 ]; then
+            echo "=== Test passed, marking task DONE ===" | tee -a "$LOGFILE"
+            python3 agent.py execute mark_task "{\"num\":$TASK_NUM,\"state\":\"done\"}" >> "$LOGFILE" 2>&1
+            # Snapshot the verified code so future tasks start from it.
+            cp workspace/tasks.py "$RALPH_DONE_FILE"
+            echo "=== Snapshot saved to workspace/.ralph_good_state ===" | tee -a "$LOGFILE"
+            TASK_DONE=true
+        else
+            if [ "$ATT" -lt "$MAX_ATTEMPTS" ]; then
+                echo "=== Test failed (attempt $ATT/$MAX_ATTEMPTS), adding feedback ===" | tee -a "$LOGFILE"
+                # Append failure feedback to prompt
+                TASKS_PY_CONTENT="$(cat workspace/tasks.py 2>/dev/null || echo '')"
+                python3 - "$TASK_FUNC" "$TASK_TEST" "$TASKS_PY_CONTENT" "$PYTEST_OUTPUT" <<'PY'
+import sys
+task_func = sys.argv[1]
+task_test = sys.argv[2]
+tasks_py = sys.argv[3]
+verify_out = sys.argv[4]
+with open('/tmp/ralph_prompt.txt', 'a') as f:
+    f.write("\n\nPREVIOUS ATTEMPT FAILED.\n")
+    f.write(f"\n=== workspace/tasks.py ===\n{tasks_py}\n")
+    f.write(f"\n=== test output (python3 -m pytest workspace/tasks.py -k {task_test} -v) ===\n{verify_out}\n")
+    f.write(f"\nFix the code and re-run: python3 -m pytest workspace/tasks.py -k {task_test} -v\n")
+PY
+            else
+                echo "=== Task failed after $MAX_ATTEMPTS attempts, marking BLOCKER ===" | tee -a "$LOGFILE"
+                python3 agent.py execute mark_task "{\"num\":$TASK_NUM,\"state\":\"blocked\"}" >> "$LOGFILE" 2>&1
+                TASK_DONE=true
+            fi
+        fi
+    done
+
+    sleep 1
 done
 
-echo "Ralph loop finished"
+echo "Ralph loop ended after $ITER iterations."
