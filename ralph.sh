@@ -9,6 +9,33 @@ set -euo pipefail
 # root, regardless of where this script is invoked from.
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Use the project's virtualenv (it has pytest and the ollama client) instead
+# of the system python3, which lacks them.
+if [ -f venv/bin/activate ]; then
+    # shellcheck disable=SC1091
+    source venv/bin/activate
+fi
+
+# Kill any PREVIOUS ralph.sh run still lingering (e.g. a stuck `--clean 50`
+# from an earlier session). A leftover run holds the GPU/model and makes new
+# Ollama chat calls hang indefinitely. We kill other instances and their
+# direct children, but never this script's own process ($$).
+# The whole block is wrapped in `timeout` because pgrep/ps can block on a
+# wedged process's /proc entry in this environment (and `pkill -P` hangs
+# outright), which would otherwise freeze the entire run before it starts.
+SELF=$$
+( timeout 20 bash -c '
+self="$1"
+for pid in $(pgrep -f "ralph\.sh" 2>/dev/null); do
+    [ "$pid" = "$self" ] && continue
+    echo "=== Killing previous ralph.sh process (pid $pid) ===" >&2
+    for cpid in $(ps -o pid= --ppid "$pid" 2>/dev/null); do
+        kill "$cpid" 2>/dev/null || true   # its blocking ollama chat/pytest
+    done
+    kill "$pid" 2>/dev/null || true
+done
+' _ "$SELF" ) || true
+
 MAX_ITERATIONS=50
 VERBOSE=false
 CLEAN=false
