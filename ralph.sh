@@ -104,11 +104,11 @@ h = elapsed // 3600
 m = (elapsed % 3600) // 60
 s = elapsed % 60
 if h:
-    elapsed_str = f"T{h}:{m:02d}:{s:02d}"
+    elapsed_str = f"{h}:{m:02d}:{s:02d}"
 elif m:
-    elapsed_str = f"T{m}:{s:02d}"
+    elapsed_str = f"{m}:{s:02d}"
 else:
-    elapsed_str = f"T{s}"
+    elapsed_str = f"{s}"
 
 c = u['calls']
 pt = u['prompt_tokens']
