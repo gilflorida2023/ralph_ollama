@@ -20,6 +20,11 @@ def clone_repo():
     Use subprocess.run to execute: git clone https://github.com/gilflorida2023/simplesieve workspace/simplesieve
     Run it from the project root so the repo lands inside workspace/simplesieve/.
     Return the subprocess result.
+
+    IMPORTANT: This step must be idempotent. If workspace/simplesieve already
+    exists (e.g. from a previous run/session), remove it first (e.g.
+    shutil.rmtree('workspace/simplesieve')) before running git clone, so the
+    clone never fails with "destination path already exists".
     """
 ```
 

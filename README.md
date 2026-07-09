@@ -10,6 +10,14 @@ An autonomous Python agent that reads a task spec, executes tasks, validates the
 4. If tests fail, the LLM is asked to debug and fix the code (with inner retry loop up to 10 attempts, feeding back generated code and test failures to improve the fix)
 5. The loop stops when all 4 tasks are `[DONE]` in `progress.md`
 
+### Session isolation (git snapshots)
+
+`workspace/` is its own git repo (the cloned upstream repo `simplesieve/` and caches are gitignored). This prevents conflicts between runs/sessions:
+
+- When a task is marked `[DONE]`, `ralph.sh` commits the agent artifacts (`tasks.py`, `test_tasks.py`, `progress.md`, `tasks.json`) as a known-good baseline.
+- At the start of each task, any **uncommitted** changes (leftover from a crashed/interrupted session) are logged (diff + recent log) and then discarded, reverting to the last committed baseline — so a failed attempt can never poison the next run.
+- `clone_repo` is idempotent: if `workspace/simplesieve` already exists it is removed before `git clone`, so a pre-existing clone never makes the clone fail.
+
 ## Quick start
 
 ```bash

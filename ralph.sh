@@ -43,6 +43,13 @@ else
     echo "=== No existing workspace/tasks.json found; running agent.py setup ==="
     python3 agent.py setup
 fi
+
+# Ensure workspace/ has its OWN git repo to snapshot agent artifacts
+# (the cloned upstream repo and caches are ignored so they are never tracked).
+if [ ! -d workspace/.git ]; then
+    git -C workspace init -q
+    printf 'simplesieve/\n__pycache__/\n.pytest_cache/\n' > workspace/.gitignore
+fi
 echo "=== Starting Ralph Wiggum Loop for Ollama ==="
 echo "Press Ctrl+C to stop. Max iterations: $MAX_ITERATIONS"
 if [ "$VERBOSE" = true ]; then
@@ -123,6 +130,21 @@ PY
 
         echo "🎯 Working on Task $TASK_NUM: $TASK_TITLE (function: $TASK_FUNC, test: $TASK_TEST)" | tee -a "$LOGFILE"
         echo "Task JSON: $NEXT_TASK_JSON" >> "$LOGFILE"
+
+        # Discard unfinished changes left by a previous (crashed/interrupted)
+        # session, but ONLY if the workspace repo already has a committed
+        # baseline to revert to. We communicate what was tried first.
+        if git -C workspace rev-parse -q --verify HEAD >/dev/null 2>&1; then
+            if git -C workspace status --porcelain | grep -q .; then
+                echo "=== Discarding unfinished changes from previous session for Task $TASK_NUM ===" | tee -a "$LOGFILE"
+                echo "--- code that was tried (diff vs last committed baseline) ---" | tee -a "$LOGFILE"
+                git -C workspace diff | tee -a "$LOGFILE"
+                git -C workspace log --oneline -3 | tee -a "$LOGFILE"
+                git -C workspace checkout -- .
+                git -C workspace clean -fd
+                echo "=== Reverted to last committed baseline ===" | tee -a "$LOGFILE"
+            fi
+        fi
 
         # Build the prompt for the task and write to /tmp/ralph_prompt.txt
         python3 - "$NEXT_TASK_JSON" <<'PY'
@@ -304,6 +326,9 @@ PY
             if echo "$PYTEST_OUTPUT" | grep -q "PASSED"; then
                 echo "=== Test passed, marking task DONE ===" | tee -a "$LOGFILE"
                 python3 agent.py execute mark_task "{\"num\":$TASK_NUM,\"state\":\"done\"}" >> "$LOGFILE" 2>&1
+                # Snapshot the successful state in the workspace git repo
+                git -C workspace add -A
+                git -C workspace commit -q -m "Task $TASK_NUM: $TASK_TITLE done" || true
                 TASK_DONE=true
             else
                 echo "=== Test failed, adding feedback and retrying ===" | tee -a "$LOGFILE"
