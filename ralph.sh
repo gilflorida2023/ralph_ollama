@@ -10,7 +10,7 @@ CLEAN=false
 # Parse arguments. Accepts either order: `ralph.sh 3 -v` or `ralph.sh -v 3`.
 # `--clean` forces a fresh `agent.py setup` (resets workspace); otherwise we
 # continue an existing run and skip setup.
-while [ "$#" -gt 0 ]; do
+while [ $# -gt 0 ]; do
     case "$1" in
         -v|--verbose) VERBOSE=true ;;
         --clean) CLEAN=true ;;
@@ -95,9 +95,9 @@ PY
         echo "=== DEBUG: Raw NEXT_TASK_JSON result ===" | tee -a "$LOGFILE"
         if [ -n "$NEXT_TASK_JSON" ]; then
             echo "Result is not empty!" | tee -a "$LOGFILE"
-            if [[ "$NEXT_TASK_JSON" == *"\"done\": true"* ]]; then
+            if [[ "$NEXT_TASK_JSON" == *'"done": true'* ]]; then
                 echo "Result indicates DONE" | tee -a "$LOGFILE"
-            elif [[ "$NEXT_TASK_JSON" == *"\"num\":"* ]]; then
+            elif [[ "$NEXT_TASK_JSON" == *'"num":'* ]]; then
                 echo "Result contains task info (num field)" | tee -a "$LOGFILE"
             else
                 echo "Result is something else: $NEXT_TASK_JSON" | tee -a "$LOGFILE"
@@ -124,7 +124,7 @@ PY
         echo "🎯 Working on Task $TASK_NUM: $TASK_TITLE (function: $TASK_FUNC, test: $TASK_TEST)" | tee -a "$LOGFILE"
         echo "Task JSON: $NEXT_TASK_JSON" >> "$LOGFILE"
 
-        # Create a prompt for the task (heredoc avoids bash quoting issues)
+        # Build the prompt for the task and write to /tmp/ralph_prompt.txt
         python3 - "$NEXT_TASK_JSON" <<'PY'
 import json, sys
 
@@ -168,67 +168,130 @@ with open('/tmp/ralph_prompt.txt', 'w') as f:
     f.write(prompt)
 PY
 
-        # Call LLM to decide what to do with the task (heredoc avoids quoting issues)
-        PROMPT_RESPONSE=$(python3 - <<'PY' || true
+        # ---- LLM call + parse + execute with inner retry loop ----
+        MAX_CODE_ATTEMPTS=3
+        ATT=0
+        TASK_DONE=false
+        while [ "$ATT" -lt "$MAX_CODE_ATTEMPTS" ] && [ "$TASK_DONE" != "true" ]; do
+            ATT=$((ATT + 1))
+
+            # If this is a retry, append failure info to prompt
+            if [ "$ATT" -gt 1 ] && [ -n "$PYTEST_OUTPUT" ]; then
+                python3 - "$PYTEST_OUTPUT" <<'PY'
+import sys
+with open('/tmp/ralph_prompt.txt','a') as f:
+    f.write("\n\nPREVIOUS ATTEMPT FAILED. pytest output:\n" + sys.argv[1] + "\nFix the code and re-run pytest.\n")
+PY
+            fi
+
+            # Log the prompt sent to Ollama
+            if [ "$VERBOSE" = true ]; then
+                echo "=== DEBUG: Prompt sent to Ollama (attempt $ATT) ===" | tee -a "$LOGFILE"
+                cat /tmp/ralph_prompt.txt | tee -a "$LOGFILE"
+                echo "=== END PROMPT ===" | tee -a "$LOGFILE"
+            fi
+
+            # Call LLM to decide what to do with the task
+            PROMPT_RESPONSE=$(python3 - <<'PY' || true
 import json
 from ollama import Client
 
 with open('/tmp/ralph_prompt.txt') as f:
     prompt = f.read()
 
-client = Client()
-resp = client.chat(
-    model='qwen2.5:7b',
-    messages=[{'role': 'user', 'content': prompt}],
-    format='json',
-    options={'temperature': 0.7}
-)
-print(resp['message']['content'])
+try:
+    client = Client()
+    resp = client.chat(model='qwen2.5:7b', messages=[{'role':'user','content':prompt}], format='json', options={'temperature':0.7})
+    print(resp['message']['content'])
+except Exception as e:
+    import traceback; traceback.print_exc()
 PY
-)
+            )
 
-        echo "LLM response: $PROMPT_RESPONSE" >> "$LOGFILE"
+            # Log raw response
+            if [ "$VERBOSE" = true ]; then
+                echo "=== DEBUG: Raw Ollama response (attempt $ATT) ===" | tee -a "$LOGFILE"
+                echo "$PROMPT_RESPONSE" | tee -a "$LOGFILE"
+                echo "=== END RESPONSE ===" | tee -a "$LOGFILE"
+            else
+                echo "LLM response: $PROMPT_RESPONSE" >> "$LOGFILE"
+            fi
 
-        # Execute tool calls from LLM response (PROMPT_RESPONSE passed via argv)
-        python3 - "$PROMPT_RESPONSE" <<'PY' 2>&1 | tee -a "$LOGFILE"
+            # Robust parse and execute tool calls
+            python3 - "$PROMPT_RESPONSE" <<'PY' 2>&1
 import json, subprocess, sys
 
 raw = sys.argv[1] if len(sys.argv) > 1 else ""
-try:
-    r = json.loads(raw)
-except json.JSONDecodeError as e:
-    print(f'JSON error: {e}')
+
+def normalize_tool_calls(raw):
+    try:
+        r = json.loads(raw)
+    except json.JSONDecodeError as e:
+        # malformed JSON -> caller should retry (nothing to execute)
+        return [], f"JSON decode error: {e}"
+    # Extract tool calls, tolerant of variations
+    tool_calls = r.get('tool_calls', [])
+    if not tool_calls:
+        # Possibly old format: top-level tool/tool_to_use/action
+        tool_name = r.get('tool') or r.get('tool_to_use') or r.get('action')
+        if tool_name and tool_name not in ('done', 'write_function', 'write_test', 'run_pytest', 'get_next_task'):
+            args = {k: v for k, v in r.items() if k not in ('tool', 'tool_to_use', 'action', 'reasoning', 'next_progress_update')}
+            tool_calls = [{'name': tool_name, 'args': args}]
+    # Normalize key names
+    normalized = []
+    for call in tool_calls:
+        if not isinstance(call, dict):
+            # skip bogus entry
+            print(f"SKIP (not dict): {call}")
+            continue
+        name = call.get('name') or call.get('function') or call.get('tool') or ''
+        if not name:
+            # skip nameless entry
+            print(f"SKIP (nameless): {call}")
+            continue
+        # Map legacy tool names
+        if name == 'run_shell' or name == 'shell':
+            name = 'run_command'
+        args = call.get('args') or call.get('parameters') or {}
+        normalized.append({'name': name, 'args': args})
+    if not normalized:
+        # No valid calls to execute
+        return [], "No valid tool calls"
+    return normalized, None
+
+# Parse
+normalized, err = normalize_tool_calls(raw)
+if err:
+    print(f"PARSE ERROR: {err}")
     sys.exit(0)
 
-reasoning = r.get('reasoning', '')
-if reasoning:
-    print(f'Reasoning: {reasoning}')
-
-# Normalize tool calls: handle all key variants
-tool_calls = r.get('tool_calls', [])
-if not tool_calls:
-    tool_name = r.get('tool') or r.get('tool_to_use') or r.get('action') or ''
-    if tool_name and tool_name not in ('done', 'write_function', 'write_test', 'run_pytest', 'get_next_task'):
-        args = {k: v for k, v in r.items() if k not in ('tool', 'tool_to_use', 'action', 'reasoning', 'next_progress_update')}
-        tool_calls = [{'name': tool_name, 'args': args}]
-
-for call in tool_calls:
-    name = call.get('name', '')
-    args = call.get('args', {})
+# Execute each call, echoing the name and args for logs
+for call in normalized:
+    name = call['name']
+    args = call['args']
     args_json = json.dumps(args)
-    print(f'Tool: {name}({args_json[:150]})')
-    result = subprocess.run(
-        ['python3', 'agent.py', 'execute', name, args_json],
-        capture_output=True, text=True, timeout=130
-    )
+    # Logging: show normalized name and args
+    print(f"Tool: {name}({json.dumps(args)})")
+    result = subprocess.run(['python3', 'agent.py', 'execute', name, args_json], capture_output=True, text=True, timeout=130)
     output = result.stdout.strip()
     print(f'  -> {output[:200]}')
 
 print('Step complete.')
 PY
-    else
-        echo "⚠️ Unexpected response from get_next_task: $NEXT_TASK_JSON" | tee -a "$LOGFILE"
-        continue
+
+            # Run pytest verification
+            echo "=== Running verification ===" | tee -a "$LOGFILE"
+            PYTEST_OUTPUT=$(python3 -m pytest workspace/test_tasks.py -k "$TASK_TEST" -v 2>&1 || true)
+            echo "$PYTEST_OUTPUT" | tee -a "$LOGFILE"
+
+            if echo "$PYTEST_OUTPUT" | grep -q "PASSED"; then
+                echo "=== Test passed, marking task DONE ===" | tee -a "$LOGFILE"
+                python3 agent.py execute mark_task "{\"num\":$TASK_NUM,\"state\":\"done\"}" >> "$LOGFILE" 2>&1
+                TASK_DONE=true
+            else
+                echo "=== Test failed, adding feedback and retrying ===" | tee -a "$LOGFILE"
+            fi
+        done
     fi
 
     sleep 1
