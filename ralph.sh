@@ -55,7 +55,7 @@ done
 MAX_ITERATIONS=50
 VERBOSE=false
 CLEAN=false
-
+MODEL_NAME='qwen2.5:7b'
 # Parse arguments. Accepts either order: `ralph.sh 3 -v` or `ralph.sh -v 3`.
 # `--clean` forces a fresh `agent.py setup` (resets workspace); otherwise we
 # continue an existing run and skip setup.
@@ -85,6 +85,49 @@ mkdir -p logs
 echo '{"calls":0,"prompt_tokens":0,"completion_tokens":0}' > /tmp/ralph_token_usage.json
 # Record start epoch for elapsed-time reporting at loop exit
 RALPH_START_EPOCH=$(date +%s)
+
+# Print a summary (token usage + elapsed time) to stdout AND the log.
+# Wrapped in a function + EXIT trap so it also fires if the run is
+# interrupted (e.g. Ctrl-C), not just on a clean loop completion.
+print_summary() {
+  if [ -f /tmp/ralph_token_usage.json ]; then
+    python3 - /tmp/ralph_token_usage.json "${RALPH_START_EPOCH:-$(date +%s)}" "$MODEL_NAME" <<'PY' 2>&1 | tee -a "$LOGFILE"
+import json, sys, time
+
+with open(sys.argv[1]) as f:
+    u = json.load(f)
+start = int(sys.argv[2])
+model = sys.argv[3]
+
+elapsed = int(time.time()) - start
+h = elapsed // 3600
+m = (elapsed % 3600) // 60
+s = elapsed % 60
+if h:
+    elapsed_str = f"T{h}:{m:02d}:{s:02d}"
+elif m:
+    elapsed_str = f"T{m}:{s:02d}"
+else:
+    elapsed_str = f"T{s}"
+
+c = u['calls']
+pt = u['prompt_tokens']
+ct = u['completion_tokens']
+tt = pt + ct
+
+print("=== Summary ===")
+print(f"  Model Name:        {model}")
+print(f"  Elapsed time:      {elapsed_str}")
+print(f"  Ollama calls:      {c}")
+if c:
+    print(f"  Prompt tokens:     {pt}  (avg {pt//c}/call)")
+    print(f"  Completion tokens: {ct}  (avg {ct//c}/call)")
+    print(f"  Total tokens:      {tt}  (avg {tt//c}/call)")
+print("================")
+PY
+  fi
+}
+trap print_summary EXIT
 
 # Setup workspace from spec.md. By default we CONTINUE an existing run and
 # skip setup (so progress is preserved). Use --clean to force a fresh setup.
@@ -305,7 +348,7 @@ PY
 
             # Call LLM via Ollama API (curl + jq for raw token stats)
             PROMPT_RESPONSE=$(
-              jq -Rs --arg model 'batiai/qwen3.5-9b:q6' \
+              jq -Rs --arg model "${MODEL_NAME}" \
                 '{model: $model, messages: [{role: "user", content: .}], format: "json", stream: false, options: {temperature: 0.7}}' \
                 /tmp/ralph_prompt.txt \
               | curl -s http://localhost:11434/api/chat -d @- \
@@ -453,41 +496,5 @@ PY
 
     sleep 1
 done
-
-# Print token usage summary and elapsed time
-if [ -f /tmp/ralph_token_usage.json ]; then
-  python3 - /tmp/ralph_token_usage.json "$RALPH_START_EPOCH" <<'PY'
-import json, sys, time
-
-with open(sys.argv[1]) as f:
-    u = json.load(f)
-start = int(sys.argv[2])
-
-elapsed = int(time.time()) - start
-h = elapsed // 3600
-m = (elapsed % 3600) // 60
-s = elapsed % 60
-if h:
-    elapsed_str = f"T{h}:{m:02d}:{s:02d}"
-elif m:
-    elapsed_str = f"T{m}:{s:02d}"
-else:
-    elapsed_str = f"T{s}"
-
-c = u['calls']
-pt = u['prompt_tokens']
-ct = u['completion_tokens']
-tt = pt + ct
-
-print("=== Summary ===")
-print(f"  Elapsed time:      {elapsed_str}")
-print(f"  Ollama calls:      {c}")
-if c:
-    print(f"  Prompt tokens:     {pt}  (avg {pt//c}/call)")
-    print(f"  Completion tokens: {ct}  (avg {ct//c}/call)")
-    print(f"  Total tokens:      {tt}  (avg {tt//c}/call)")
-print("================")
-PY
-fi
 
 echo "Ralph loop ended after $ITER iterations."
