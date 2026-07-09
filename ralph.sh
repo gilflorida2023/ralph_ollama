@@ -441,6 +441,119 @@ for call in normalized:
 print('Step complete.')
 PY
 
+            # --- Post-write merge: protect done functions from overwrite ---
+            # The model tends to rewrite tasks.py / test_tasks.py with ONLY the
+            # current function, deleting all previously done work. Merge the
+            # model's version of the current task back into the last committed
+            # version (which holds every done function + its imports). Runs on
+            # every attempt so done code can never be lost.
+            python3 - "$TASK_FUNC" "$TASK_TEST" <<'PY' || true
+import subprocess, sys
+
+func_target = sys.argv[1]
+test_target = sys.argv[2]
+
+def git_show(path):
+    r = subprocess.run(['git', 'show', f'HEAD:{path}'],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        return None
+    return r.stdout
+
+def top_level_func_lines(code, name):
+    """Return lines of top-level def `name` from `code`, or None."""
+    lines = code.split('\n')
+    out = []
+    in_func = False
+    indent = None
+    for line in lines:
+        s = line.lstrip()
+        if s.startswith(f'def {name}('):
+            in_func = True
+            indent = len(line) - len(s)
+            out.append(line)
+        elif in_func:
+            if s.startswith('def ') and len(line) - len(s) <= indent:
+                break
+            out.append(line)
+    return out if out else None
+
+def remove_top_level_func(lines, name):
+    """Return list of lines with top-level def `name` removed."""
+    out = []
+    in_func = False
+    indent = None
+    for line in lines:
+        s = line.lstrip()
+        if s.startswith(f'def {name}('):
+            in_func = True
+            indent = len(line) - len(s)
+            continue
+        elif in_func:
+            if s.startswith('def ') and len(line) - len(s) <= indent:
+                in_func = False
+                out.append(line)
+            continue
+        out.append(line)
+    return out
+
+def is_import(line):
+    return line.strip().startswith(('import ', 'from '))
+
+def merge_file(path, target):
+    if not target:
+        return
+    committed = git_show(path)
+    if committed is None:
+        # No committed version yet (first task) - nothing to protect
+        return
+    try:
+        with open(path) as f:
+            model = f.read()
+    except FileNotFoundError:
+        return
+
+    committed_lines = committed.split('\n')
+    model_lines = model.split('\n')
+
+    # Base = committed code minus the target function
+    base_lines = remove_top_level_func(committed_lines, target)
+
+    # Keep all committed imports, add any new ones the model introduced
+    committed_imports = [l for l in committed_lines if is_import(l)]
+    committed_import_set = set(committed_imports)
+    new_imports = [l for l in model_lines if is_import(l) and l not in committed_import_set]
+
+    # Insert new imports right after the last existing import line
+    last_imp = -1
+    for i, l in enumerate(base_lines):
+        if is_import(l):
+            last_imp = i
+    for ni in new_imports:
+        base_lines.insert(last_imp + 1, ni)
+        last_imp += 1
+
+    # Extract the model's (or committed) version of the target function
+    target_lines = top_level_func_lines(model, target)
+    if not target_lines:
+        target_lines = top_level_func_lines(committed, target) or []
+
+    # Drop trailing blank lines, then append the target function
+    while base_lines and base_lines[-1].strip() == '':
+        base_lines.pop()
+    if target_lines:
+        base_lines.append('')
+        base_lines.append('')
+        base_lines.extend(target_lines)
+
+    with open(path, 'w') as f:
+        f.write('\n'.join(base_lines) + '\n')
+    print(f"Merged {path}: preserved done functions, kept '{target}' from model")
+
+merge_file('workspace/tasks.py', func_target)
+merge_file('workspace/test_tasks.py', test_target)
+PY
+
             # Run pytest verification
             echo "=== Running verification ===" | tee -a "$LOGFILE"
             PYTEST_OUTPUT=$(python3 -m pytest workspace/test_tasks.py -k "$TASK_TEST" -v 2>&1 || true)
