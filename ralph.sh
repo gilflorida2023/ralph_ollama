@@ -219,23 +219,9 @@ PY
         while [ "$ATT" -lt "$MAX_CODE_ATTEMPTS" ] && [ "$TASK_DONE" != "true" ] && [ "$TASK_FAILED" != "true" ]; do
             ATT=$((ATT + 1))
 
-            # If this is a retry, append failure info to prompt
-            if [ "$ATT" -gt 1 ] && [ -n "$PYTEST_OUTPUT" ]; then
-                # Build a detailed context including code, test, and errors
-                python3 - "$TASK_FUNC" "$TASK_TEST" "$PYTEST_OUTPUT" <<'PY'
-import sys
-task_func = sys.argv[1]
-task_test = sys.argv[2]
-pytest_output = sys.argv[3]
-with open('/tmp/ralph_prompt.txt','a') as f:
-    f.write("\n\nPREVIOUS ATTEMPT FAILED. Here is what you generated:\n")
-    f.write(f"\n=== Code for '{task_func}' ===\n{task_func}\n")
-    if task_test:
-        f.write(f"\n=== Test for '{task_test}' ===\n{task_test}\n")
-    f.write(f"\n=== pytest output ===\n{pytest_output}\n")
-    f.write("\nFix the code and re-run pytest.\n")
-PY
-            fi
+            # If this is a retry, failure feedback (full current code + pytest
+            # output) is appended after pytest runs, in the failure block below.
+            # No name-only feedback here.
 
             # If this is the final attempt and the test failed, mark as BLOCKER
             if [ "$ATT" -eq "$MAX_CODE_ATTEMPTS" ] && [ -n "$PYTEST_OUTPUT" ]; then
@@ -261,7 +247,7 @@ with open('/tmp/ralph_prompt.txt') as f:
 
 try:
     client = Client()
-    resp = client.chat(model='qwen2.5:7b', messages=[{'role':'user','content':prompt}], format='json', options={'temperature':0.7})
+    resp = client.chat(model='batiai/qwen3.5-9b:q4', messages=[{'role':'user','content':prompt}], format='json', options={'temperature':0.7})
     print(resp['message']['content'])
 except Exception as e:
     import traceback; traceback.print_exc()

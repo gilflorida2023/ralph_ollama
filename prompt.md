@@ -24,7 +24,7 @@ Do NOT stop after just writing files. You MUST run pytest in the same response.
 
 ## Rules
 
-- Work on tasks in order (1, 2, 3, 4).
+- Implement ONLY the single task you are given in this response. Do not implement other tasks (the harness serves exactly one task per iteration).
 - Each function goes in `workspace/tasks.py`. Add new functions as you go, do NOT overwrite previous ones. Use `read_file` first and append.
 - Each test goes in `workspace/test_tasks.py`. Add new tests as you go.
 - All file writes go through the `write_file` tool with args {"path": ..., "content": ...}.
