@@ -16,9 +16,9 @@ Only mark a task `[DONE]` when its corresponding pytest test passes.
 
 ```python
 def clone_repo():
-    """Clone https://github.com/gilflorida2023/simplesieve into workspace/.
-    Use subprocess.run to execute: git clone https://github.com/gilflorida2023/simplesieve
-    Run it from the workspace/ directory so the repo lands inside workspace/.
+    """Clone https://github.com/gilflorida2023/simplesieve into workspace/simplesieve/.
+    Use subprocess.run to execute: git clone https://github.com/gilflorida2023/simplesieve workspace/simplesieve
+    Run it from the project root so the repo lands inside workspace/simplesieve/.
     Return the subprocess result.
     """
 ```
