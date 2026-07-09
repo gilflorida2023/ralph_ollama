@@ -5,11 +5,15 @@ set -euo pipefail
 
 MAX_ITERATIONS=50
 VERBOSE=false
+CLEAN=false
 
 # Parse arguments. Accepts either order: `ralph.sh 3 -v` or `ralph.sh -v 3`.
+# `--clean` forces a fresh `agent.py setup` (resets workspace); otherwise we
+# continue an existing run and skip setup.
 while [ "$#" -gt 0 ]; do
     case "$1" in
         -v|--verbose) VERBOSE=true ;;
+        --clean) CLEAN=true ;;
         -*) echo "Unknown option: $1" >&2; exit 1 ;;
         *)
             if [[ "$1" =~ ^[0-9]+$ ]]; then
@@ -28,8 +32,17 @@ LOGFILE="logs/ralph_$(date +%s).log"
 
 mkdir -p logs
 
-# Setup workspace from spec.md
-python3 agent.py setup
+# Setup workspace from spec.md. By default we CONTINUE an existing run and
+# skip setup (so progress is preserved). Use --clean to force a fresh setup.
+if [ "$CLEAN" = true ]; then
+    echo "=== Clean start: running agent.py setup ==="
+    python3 agent.py setup
+elif [ -f workspace/tasks.json ]; then
+    echo "=== Continuing existing run (skipping agent.py setup) ==="
+else
+    echo "=== No existing workspace/tasks.json found; running agent.py setup ==="
+    python3 agent.py setup
+fi
 echo "=== Starting Ralph Wiggum Loop for Ollama ==="
 echo "Press Ctrl+C to stop. Max iterations: $MAX_ITERATIONS"
 if [ "$VERBOSE" = true ]; then
