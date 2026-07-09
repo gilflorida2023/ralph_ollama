@@ -252,6 +252,16 @@ PY
             fi
         fi
 
+        # Pre-populate tasks.py / test_tasks.py from the last committed snapshot
+        # (which contains every done function's actual code). The model then
+        # reads this via read_file and only adds the current task's function,
+        # instead of overwriting the whole file and losing done work. The
+        # post-write merge below is the backstop if it still overwrites.
+        if git -C workspace rev-parse -q --verify HEAD >/dev/null 2>&1; then
+            git -C workspace show HEAD:tasks.py > workspace/tasks.py 2>/dev/null || true
+            git -C workspace show HEAD:test_tasks.py > workspace/test_tasks.py 2>/dev/null || true
+        fi
+
         # Safety net: remove any stray clone that landed at the project root
         # (a clone_repo that omitted the explicit workspace/simplesieve target
         # would create ./simplesieve here instead of ./workspace/simplesieve).
@@ -454,7 +464,11 @@ func_target = sys.argv[1]
 test_target = sys.argv[2]
 
 def git_show(path):
-    r = subprocess.run(['git', 'show', f'HEAD:{path}'],
+    # `path` is a filesystem path (e.g. 'workspace/tasks.py'); git lives in the
+    # workspace subrepo, so run `git -C workspace show` and strip the leading
+    # 'workspace/' to get the repo-relative path.
+    repo_path = path.split('/', 1)[1] if '/' in path else path
+    r = subprocess.run(['git', '-C', 'workspace', 'show', f'HEAD:{repo_path}'],
                        capture_output=True, text=True)
     if r.returncode != 0:
         return None
@@ -519,10 +533,18 @@ def merge_file(path, target):
     # Base = committed code minus the target function
     base_lines = remove_top_level_func(committed_lines, target)
 
-    # Keep all committed imports, add any new ones the model introduced
+    # Keep all committed imports, add any new ones the model introduced.
+    # Reject self-imports (from tasks / import tasks) the model tends to write
+    # inside tasks.py itself - they cause a circular import at collection time.
     committed_imports = [l for l in committed_lines if is_import(l)]
     committed_import_set = set(committed_imports)
-    new_imports = [l for l in model_lines if is_import(l) and l not in committed_import_set]
+    new_imports = []
+    for l in model_lines:
+        if not is_import(l) or l in committed_import_set:
+            continue
+        if l.strip().startswith(('from tasks ', 'import tasks')):
+            continue
+        new_imports.append(l)
 
     # Insert new imports right after the last existing import line
     last_imp = -1
