@@ -30,6 +30,10 @@ def parse_spec():
         func_name = func_m.group(1) if func_m else ""
         test_name = test_m.group(1) if test_m else ""
         validation = val_m.group(1).strip() if val_m else ""
+        deps_m = re.search(r"\*\*Depends on:\*\*\s*(.+)", section)
+        deps = []
+        if deps_m:
+            deps = [int(x.strip()) for x in deps_m.group(1).split(",") if x.strip()]
         func_code = ""
         tc = re.search(r"```python\s*\n(.*?)```", section, re.DOTALL)
         if tc:
@@ -44,6 +48,7 @@ def parse_spec():
             "func": func_name,
             "test": test_name,
             "validation": validation,
+            "depends_on": deps,
             "func_code": func_code,
             "test_code": test_code,
         })
@@ -85,8 +90,13 @@ def load_progress():
 def find_next_task():
     progress = load_progress()
     for t in load_tasks():
-        if not progress.get(t["num"], False):
-            return t
+        if progress.get(t["num"], False):
+            continue
+        # Skip tasks whose dependencies are not yet done.
+        deps = t.get("depends_on", [])
+        if not all(progress.get(d, False) for d in deps):
+            continue
+        return t
     return None
 
 
@@ -96,63 +106,6 @@ def next_task():
         print(json.dumps({"done": True}))
     else:
         print(json.dumps(t))
-
-
-def next_action():
-    t = find_next_task()
-    if t is None:
-        print(json.dumps({"action": "done"}))
-        return
-
-    tasks_path = os.path.join(WORKSPACE, "tasks.py")
-    tests_path = os.path.join(WORKSPACE, "test_tasks.py")
-
-    func_in_file = False
-    if os.path.isfile(tasks_path):
-        with open(tasks_path) as f:
-            func_in_file = f"def {t['func']}(" in f.read()
-
-    test_in_file = False
-    if os.path.isfile(tests_path):
-        with open(tests_path) as f:
-            test_in_file = f"def {t['test']}(" in f.read()
-
-    if not func_in_file:
-        print(json.dumps({
-            "action": "write_function",
-            "num": t["num"],
-            "title": t["title"],
-            "func": t["func"],
-            "func_code": t["func_code"],
-        }))
-    elif not test_in_file:
-        print(json.dumps({
-            "action": "write_test",
-            "num": t["num"],
-            "title": t["title"],
-            "test": t["test"],
-            "test_code": t["test_code"],
-        }))
-    else:
-        # Auto-run pytest and check result
-        result = subprocess.run(
-            ["python3", "-m", "pytest", "workspace/test_tasks.py", "-k", t["test"], "-v", "--tb=short"],
-            capture_output=True, text=True, timeout=120, cwd=PROJECT_ROOT
-        )
-        passed = f"{t['test']} PASSED" in result.stdout
-        if passed:
-            update_progress_file(t["num"], True)
-            print(json.dumps({"action": "test_passed", "num": t["num"], "title": t["title"]}))
-        else:
-            print(json.dumps({
-                "action": "run_pytest",
-                "num": t["num"],
-                "title": t["title"],
-                "test": t["test"],
-                "validation": t["validation"],
-                "output": result.stdout[-500:] if result.stdout else "",
-                "errors": result.stderr[-500:] if result.stderr else "",
-            }))
 
 
 def progress():
@@ -358,7 +311,7 @@ def execute(tool_name, args_str):
 def main():
     if len(sys.argv) < 2:
         print("Usage: agent.py <command> [args...]", file=sys.stderr)
-        print("Commands: setup, next_task, next_action, progress, execute <tool> <json_args>", file=sys.stderr)
+        print("Commands: setup, next_task, progress, execute <tool> <json_args>", file=sys.stderr)
         sys.exit(1)
 
     cmd = sys.argv[1]
@@ -367,8 +320,6 @@ def main():
         setup()
     elif cmd == "next_task":
         next_task()
-    elif cmd == "next_action":
-        next_action()
     elif cmd == "progress":
         progress()
     elif cmd == "execute":

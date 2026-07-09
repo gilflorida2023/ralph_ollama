@@ -40,6 +40,7 @@ dispatch chain — just add a `def test_*(...)` and run
 - EVERYTHING goes in `workspace/tasks.py` (functions, tests, `main()`). There is NO `test_tasks.py` and NO pytest.
 - Add new functions as you go — do NOT overwrite previous ones. `read_file` first, then re-write the ENTIRE file with all existing functions + tests + the new ones + `main()`.
 - Functions call each other directly by name (e.g. `test_get_project_dir` calls `clone_repo()`). Do NOT write `from tasks import ...` — everything is already in the same module, and such a self-import is a circular import error.
+- If the task lists **dependencies**, those functions ALREADY EXIST in `tasks.py` — call them directly, do NOT re-implement or overwrite them.
 - A test passes when `python3 workspace/tasks.py test_NAME` exits with code 0 (a failing `assert` raises and makes the script exit non-zero).
 - All file writes go through the `write_file` tool with args {"path": ..., "content": ...}.
 - Run commands go through the `run_command` tool with args {"cmd": "..."}.

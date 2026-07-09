@@ -52,6 +52,7 @@ def test_clone_repo():
 
 ## Task 2: Navigate to project directory
 
+**Depends on:** 1
 **Function:** `get_project_dir()` in `tasks.py`
 
 ```python
@@ -80,6 +81,7 @@ def test_get_project_dir():
 
 ## Task 3: Build the program
 
+**Depends on:** 1, 2
 **Function:** `build_program()` in `tasks.py`
 
 ```python
@@ -112,6 +114,7 @@ def test_build_program():
 
 ## Task 4: Count primes in first 1,000,000 natural numbers
 
+**Depends on:** 1, 2, 3
 **Function:** `count_primes()` in `tasks.py`
 
 ```python
