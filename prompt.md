@@ -30,7 +30,8 @@ Do NOT stop after just writing files. You MUST run pytest in the same response.
 - All file writes go through the `write_file` tool with args {"path": ..., "content": ...}.
 - Run commands (including pytest) through the `run_command` tool with args {"cmd": "..."}.
 - The harness runs the test and marks the task DONE automatically. You do NOT need to mark progress yourself.
-- If a test fails, fix the code and re-run via `run_command`. Do NOT give up.
+- If a test fails, the harness gives you **detailed feedback** including the full current `workspace/tasks.py` and `workspace/test_tasks.py` content, plus the pytest output. You have **up to 10 retry attempts** to fix the task.
+- After 10 failed attempts, the task is marked as BLOCKER and the Ralph loop stops processing further tasks.
 - Tests import from `tasks` (e.g. `from tasks import clone_repo`), because pytest runs from the project root with `workspace/test_tasks.py`.
 
 ## Output format

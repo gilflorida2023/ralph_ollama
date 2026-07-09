@@ -197,10 +197,7 @@ PY
             # If this is the final attempt and the test failed, mark as BLOCKER
             if [ "$ATT" -eq "$MAX_CODE_ATTEMPTS" ] && [ -n "$PYTEST_OUTPUT" ]; then
                 echo "=== Task failed after $MAX_CODE_ATTEMPTS attempts, marking as BLOCKER ===" | tee -a "$LOGFILE"
-                # NOTE: progress.md only supports [DONE] and [TODO] markers.
-                # To add BLOCKER support, you would need to modify the mark_task function
-                # in agent.py to handle a new "blocked" state.
-                # For now, the task will remain [TODO] and will be retried indefinitely.
+                python3 agent.py execute mark_task "{\"num\":$TASK_NUM,\"state\":\"blocked\"}" >> "$LOGFILE" 2>&1
                 TASK_FAILED=true
             fi
 
@@ -310,6 +307,25 @@ PY
                 TASK_DONE=true
             else
                 echo "=== Test failed, adding feedback and retrying ===" | tee -a "$LOGFILE"
+
+                # Capture current code for richer feedback
+                TASKS_PY_CONTENT="$(cat workspace/tasks.py 2>/dev/null || echo '')"
+                TESTS_PY_CONTENT="$(cat workspace/test_tasks.py 2>/dev/null || echo '')"
+                python3 - "$TASK_FUNC" "$TASK_TEST" "$TASKS_PY_CONTENT" "$TESTS_PY_CONTENT" "$PYTEST_OUTPUT" <<'PY'
+import sys
+task_func = sys.argv[1]
+task_test = sys.argv[2]
+tasks_py = sys.argv[3]
+tests_py = sys.argv[4]
+pytest_out = sys.argv[5]
+with open('/tmp/ralph_prompt.txt','a') as f:
+    f.write("\n\nPREVIOUS ATTEMPT FAILED. Here is the full current code:\n")
+    f.write(f"\n=== workspace/tasks.py ===\n{tasks_py}\n")
+    if task_test:
+        f.write(f"\n=== workspace/test_tasks.py ===\n{tests_py}\n")
+    f.write(f"\n=== pytest output ===\n{pytest_out}\n")
+    f.write("\nFix the code and re-run pytest.\n")
+PY
             fi
         done
     fi

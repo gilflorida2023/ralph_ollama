@@ -76,8 +76,9 @@ def load_progress():
         content = f.read()
     result = {}
     for t in load_tasks():
-        marker = f"[DONE] Task {t['num']}:"
-        result[t["num"]] = marker in content
+        done_marker = f"[DONE] Task {t['num']}:"
+        blocked_marker = f"[BLOCKED] Task {t['num']}:"
+        result[t["num"]] = (done_marker in content) or (blocked_marker in content)
     return result
 
 
@@ -171,13 +172,14 @@ def update_progress_file(num, state):
             break
     if not task:
         return f"ERROR: unknown task {num}"
+    marker = state.upper()
     with open(PROGRESS_PATH) as f:
         lines = f.readlines()
     desc = f"Task {task['num']}: {task['title']}"
     new_lines = []
     for line in lines:
         if desc in line:
-            new_lines.append(f"- [{state}] {desc}\n")
+            new_lines.append(f"- [{marker}] {desc}\n")
         else:
             new_lines.append(line)
     with open(PROGRESS_PATH, "w") as f:
@@ -258,27 +260,16 @@ def execute_get_next_task(args):
 def execute_mark_task(args):
     num = int(args.get("num", 0))
     state = args.get("state", "done")
-    
-    done = state == "done"
+
     result = update_progress_file(num, state)
     if "ERROR" in result:
         return f"ERROR: {result}"
-    
+
     # Regenerate tasks.json from spec (keeps task definitions current)
     tasks = parse_spec()
     with open(TASKS_JSON, "w") as f:
         json.dump(tasks, f, indent=2)
-    
-    # Regenerate progress.md, PRESERVING existing done/blocked markers so that
-    # marking one task does not reset the others back to TODO.
-    progress = load_progress()
-    lines = []
-    for t in tasks:
-        marker = "DONE" if progress.get(t["num"], False) else "TODO"
-        lines.append(f"- [{marker}] Task {t['num']}: {t['title']}\n")
-    with open(PROGRESS_PATH, "w") as f:
-        f.writelines(lines)
-    
+
     return f"OK: Task {num} marked as {state}"
 
 
