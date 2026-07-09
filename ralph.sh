@@ -272,10 +272,11 @@ PY
                 git -C workspace diff | tee -a "$LOGFILE"
                 git -C workspace log --oneline -3 | tee -a "$LOGFILE"
                 git -C workspace checkout -- .
-                # -fdx (not -fd) so gitignored dirs like workspace/simplesieve/
-                # are also removed between iterations; otherwise stale clones
-                # persist and clone_repo() re-clones every time.
-                git -C workspace clean -fdx
+                # -fdx (not -fd) so gitignored dirs like __pycache__/ are
+                # removed between iterations; the -e simplesieve/ exclusion
+                # PRESERVES the cloned upstream repo, which downstream tasks
+                # (get_project_dir / build_program / count_primes) depend on.
+                git -C workspace clean -fdx -e simplesieve/
                 echo "=== Reverted to last committed baseline ===" | tee -a "$LOGFILE"
             fi
         fi
