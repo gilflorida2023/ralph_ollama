@@ -18,23 +18,39 @@ fi
 
 # Kill any PREVIOUS ralph.sh run still lingering (e.g. a stuck `--clean 50`
 # from an earlier session). A leftover run holds the GPU/model and makes new
-# Ollama chat calls hang indefinitely. We kill other instances and their
-# direct children, but never this script's own process ($$).
-# The whole block is wrapped in `timeout` because pgrep/ps can block on a
-# wedged process's /proc entry in this environment (and `pkill -P` hangs
-# outright), which would otherwise freeze the entire run before it starts.
+# Ollama chat calls hang indefinitely.
+#
+# IMPORTANT implementation notes (learned the hard way):
+#  * Run this INLINE in the main shell. A `bash -c` / `timeout bash -c`
+#    subshell would itself match `pgrep -f "ralph\.sh"` (its own cmdline
+#    literally contains "ralph.sh") and kill ITSELF instead of the stale run.
+#  * `pgrep -f "ralph\.sh"` ALSO matches our own launcher chain (the tool
+#    shell, `timeout`, etc. all have "ralph.sh" in their command line). We must
+#    skip $$ AND every ancestor (parent, grandparent, ...), otherwise we kill
+#    the very shell that launched us and the run hangs.
+#  * Do NOT use `pkill -P` here: it hangs in this environment. `ps --ppid` is
+#    safe for listing children.
 SELF=$$
-( timeout 20 bash -c '
-self="$1"
-for pid in $(pgrep -f "ralph\.sh" 2>/dev/null); do
-    [ "$pid" = "$self" ] && continue
+# Collect $$ and all ancestor pids so we never kill our own launcher tree.
+ANCESTORS="$SELF"
+p=$PPID
+while [ -n "$p" ] && [ "$p" != "0" ]; do
+    ANCESTORS="$ANCESTORS $p"
+    p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')
+done
+for pid in $(pgrep -f "ralph\.sh" 2>/dev/null || true); do
+    skip=0
+    for a in $ANCESTORS; do
+        [ "$pid" = "$a" ] && skip=1 && break
+    done
+    [ "$skip" = 1 ] && continue
     echo "=== Killing previous ralph.sh process (pid $pid) ===" >&2
     for cpid in $(ps -o pid= --ppid "$pid" 2>/dev/null); do
         kill "$cpid" 2>/dev/null || true   # its blocking ollama chat/pytest
     done
     kill "$pid" 2>/dev/null || true
 done
-' _ "$SELF" ) || true
+
 
 MAX_ITERATIONS=50
 VERBOSE=false

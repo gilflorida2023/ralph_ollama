@@ -210,7 +210,13 @@ def execute_write_file(args):
 
 def execute_run_command(args):
     cmd = args.get("cmd") or args.get("command") or ""
-    blocked = ["rm -rf workspace", "rm -rf ./workspace", "rm -rf /", "rm -rf ~"]
+    # Block dangerous commands AND any attempt by the model to re-invoke the
+    # harness itself (which would spawn a nested ralph.sh loop contending for
+    # the GPU, or let it tamper with its own driver).
+    blocked = [
+        "rm -rf workspace", "rm -rf ./workspace", "rm -rf /", "rm -rf ~",
+        "ralph.sh", "agent.py",
+    ]
     for b in blocked:
         if b in cmd:
             return f"ERROR: blocked dangerous command: {cmd}"
