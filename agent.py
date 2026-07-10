@@ -34,18 +34,28 @@ def parse_spec():
             func_match = re.search(r'def (\w+)\(', func_code)
             func_name = func_match.group(1) if func_match else ""
         
-        # If no code block, try to extract from English "Signature: def func_name()" pattern
+        # If no code block, try to extract from the "Signature: def func_name()" pattern.
+        # Be tolerant of markdown bold markers (e.g. **Signature:** `def main()`).
         if not func_name:
-            sig_match = re.search(r'Signature:\s*def\s+(\w+)\s*\(', section)
+            sig_match = re.search(r'\*{0,2}Signature\*{0,2}:\s*`?def\s+(\w+)\s*\(', section)
             if sig_match:
                 func_name = sig_match.group(1)
             else:
-                # Fallback: try to infer from title/description
-                func_match = re.search(r'function\s+`?(\w+)`?', section, re.IGNORECASE)
-                if not func_match:
-                    func_match = re.search(r'def (\w+)', section)
-                if func_match:
-                    func_name = func_match.group(1)
+                # Fallback: infer from title parenthetical, e.g. "Task 5: ... (main)"
+                title_m = re.search(r'Task\s+\d+:\s*.*?\((\w+)\)', section)
+                if title_m:
+                    func_name = title_m.group(1)
+                else:
+                    # Infer from "function `name`" (require backticks so we don't
+                    # capture words like "definition" from "function definition").
+                    func_match = re.search(r'function\s+`([\w]+)`', section, re.IGNORECASE)
+                    if not func_match:
+                        # Last resort: first real signature `def name(` (skip doctest
+                        # occurrences, which are written as `def (\w+)\(` without a
+                        # trailing space before `(`).
+                        func_match = re.search(r'def\s+(\w+)\s*\(', section)
+                    if func_match:
+                        func_name = func_match.group(1)
         
         test_name = func_name
         
@@ -142,8 +152,12 @@ def update_progress_file(num, state):
     if not task:
         return f"ERROR: unknown task {num}"
     marker = state.upper()
-    with open(PROGRESS_PATH) as f:
-        lines = f.readlines()
+    if not os.path.exists(PROGRESS_PATH):
+        # Recreate progress.md from the spec if it is missing.
+        lines = [f"- [TODO] Task {t['num']}: {t['title']}\n" for t in tasks]
+    else:
+        with open(PROGRESS_PATH) as f:
+            lines = f.readlines()
     desc = f"Task {task['num']}: {task['title']}"
     new_lines = []
     for line in lines:
@@ -168,6 +182,13 @@ def execute_read_file(args):
 def execute_write_file(args):
     path = args.get("path", "")
     content = args.get("content", "")
+    # Models sometimes emit double-escaped newlines (literal backslash-n) in the
+    # JSON `content`, which would write the entire file as one broken line and make
+    # pytest fail to even import it. If literal "\n" occurrences outnumber real
+    # newlines, unescape them. Normal files (real newlines, no literal "\n") are
+    # left untouched.
+    if content.count("\\n") > content.count("\n"):
+        content = content.replace("\\n", "\n")
     full = os.path.join(PROJECT_ROOT, path)
     os.makedirs(os.path.dirname(full), exist_ok=True)
     with open(full, "w") as f:

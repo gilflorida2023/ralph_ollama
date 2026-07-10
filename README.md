@@ -74,3 +74,24 @@ The LLM emits tool calls as a JSON object with a `tool_calls` array: `{"tool_cal
 - `workspace/simplesieve/` — cloned repo (built by the agent)
 
 The `workspace/` directory is gitignored.
+
+## Model compatibility
+
+Ralph requires a model that can (1) emit **structured JSON tool-calls** (`{"tool_calls": [{"name": ..., "args": ...}]}`), (2) generate **Python with `>>>` doctests**, and (3) **self-correct** failing tests from feedback. Models below were tried and found **insufficient** for the Ralph loop:
+
+| Model | Why it failed for Ralph |
+|-------|-------------------------|
+| `granite4.1:8b` | Too weak at self-correcting doctests. On Task 2 it repeatedly wrote `re` inside a doctest without `import re` and could not fix it across 6+ retries, exhausting the attempt budget. |
+| `lfm2.5:8b` | Cannot follow the JSON tool-call schema. Emits `write_file({})` with an empty `args` object, so no code is ever written and validation reports "no tests ran". |
+| `granite3.2-vision:2b` | Multimodal/vision model — wrong modality for a text/code agent task. |
+| `qwen3-vl:8b` | Multimodal/vision model — wrong modality for text/code generation. |
+| `deepseek-r1:1.5b` | Too small (<2B) to sustain structured JSON output plus Python/doctest generation. |
+| `opencoder:1.5b` | Too small (<2B) for reliable JSON + code generation. |
+| `qwen2.5-coder:1.5b` | Too small to reliably generate correct doctests. |
+| `qwen2.5:0.5b` | Far too small for this task. |
+| `qwen3:1.7b` | Too small; struggles to keep valid JSON and working code simultaneously. |
+| `deepseek-r1:8b` | Chain-of-thought reasoning floods the response with `<think:6124c78e>` text, which fights the JSON parser and is extremely slow per call. |
+| `deepseek-r1:7b` | Same CoT verbosity / slowness problem as the 8b variant. |
+| `qwen2.5-coder:3b` | Borderline — the 7b works well, but 3b frequently produces broken doctests. |
+
+**Recommended:** `qwen2.5-coder:7b` — purpose-built for code, reliably produces the JSON tool-calls and doctests Ralph needs, and has carried the run through all five tasks. General 7–9B models (`qwen2.5:7b`, `qwen3:8b`, `qwen3:4b`, `glm4:9b`, `llama3.1:8b`) are also plausible alternatives.
