@@ -30,6 +30,27 @@ The whole program — implementations and runner — lives in this single file, 
 
 `main()` auto-discovers functions and runs them, so you NEVER edit the dispatch chain — just add a `def TASK_NAME(...)` with doctests and run `python3 -m pytest --doctest-modules workspace/tasks.py -v`. Keep `main()` verbatim from spec.md.
 
+## One task at a time — finite state machine discipline
+
+This loop is a **finite state machine**: exactly ONE task is active per iteration, and the
+next task is only accepted after the current one has **passed validation** through the normal
+process. Writing multiple tasks in a single response is dangerous and is NOT allowed:
+
+- You will likely skip the doctests/validation for the tasks you "pre-implement", so their
+  behavior is never actually verified. A step that is never tested can silently break later
+  tasks that depend on it.
+- Dependencies are only guaranteed to exist because the harness validated them. Pre-implementing
+  a later task before its turn means it was never validated, defeating the FSM guarantee.
+
+Therefore:
+- Implement ONLY the single task you are given in this response. Do not implement other tasks
+  (the harness serves exactly one task per iteration).
+- Do NOT write `get_project_dir`, `build_program`, `count_primes`, etc. ahead of schedule. If
+  they are dependencies, they already exist in `tasks.py` — just call them by name.
+- When you call `write_file`, the file must contain: the pre-existing functions (unchanged) +
+  the ONE new function for the current task (with its doctests) + `main()` at the bottom.
+  Nothing else new.
+
 ## Rules
 
 - Implement ONLY the single task you are given in this response. Do not implement other tasks (the harness serves exactly one task per iteration).
