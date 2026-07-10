@@ -1,165 +1,105 @@
-# SimpleSieve Setup & Validation
+# Specification: SimpleSieve Setup & Validation Loop
 
-You must create ONE Python file in the `workspace/` directory:
-
-1. **`tasks.py`** — every function AND its test go in this single file.
-
-After writing each function and its test, run it directly as a script to
-	validate: `python3 -m pytest workspace/tasks.py -k <test_name> -v`. Only mark a task `[DONE]`
-	when its test passes (the script exits 0).
-
-The file ends with a `main()` dispatcher (see the **Entry point** section) that
-runs whichever `test_*` function matches `sys.argv[1]`. `main()` auto-discovers
-test functions, so you only ever add `def test_*(...)` functions — you never
-edit the `main()` dispatch logic.
+## 1. Global Execution Rules
+* **Workspace Constraint:** All implementations and test cases must reside in exactly one file: `workspace/tasks.py`.
+* **State Updates:** Only change `Status: [TODO]` to `Status: [DONE]` once the exact command in the **Validation Command** section passes with an exit code of `0`.
+* **Test Isolation:** Do not use mock objects. All tests must verify real file-system states and real process executions on disk.
+* **Entry Point:** `workspace/tasks.py` must define a `main()` function that calls all task functions sequentially (clone_repo, get_project_dir, build_program, count_primes). The file ends with `if __name__ == "__main__": main()`.
 
 ---
 
-## Task 1: Clone repository
+## 2. Phase Task Breakdown
 
-**Function:** `clone_repo()` in `tasks.py`
-
-```python
-import os
-import shutil
-from subprocess import run
-
-def clone_repo():
-    """Clone https://github.com/gilflorida2023/simplesieve into workspace/simplesieve/.
-    Return the subprocess result.
-    """
-    target = "workspace/simplesieve"
-    # Idempotent: remove any pre-existing clone so git clone never fails with
-    # "destination path already exists".
-    if os.path.isdir(target):
-        shutil.rmtree(target)
-    return run(["git", "clone", "https://github.com/gilflorida2023/simplesieve", target])
-```
-
-**Test:** `test_clone_repo()` in `tasks.py`
-
-```python
-def test_clone_repo():
-    result = clone_repo()
-    assert result.returncode == 0, f"git clone failed: {result.stderr}"
-    assert os.path.isdir("workspace/simplesieve"), "Directory workspace/simplesieve does not exist"
-```
-
-**Validation:** Run `python3 -m pytest workspace/tasks.py -k test_clone_repo -v`
-**Done:** False
+### Task 1: Clone Repository
+* **Status:** [TODO]
+* **Description:** Implement a function `clone_repo()` that clones `https://github.com/gilflorida2023/simplesieve` into `workspace/simplesieve/`.
+* **Requirements:**
+  * Must be fully idempotent. If `workspace/simplesieve/` already exists, clean it or remove it entirely before cloning to prevent "destination path already exists" failures.
+  * Must return the execution result or handle process failures explicitly.
+* **Implementation:**
+  * Signature: `def clone_repo()` — no arguments, returns a `subprocess.CompletedProcess`.
+  * Import `subprocess.run`, `os`, and `shutil`.
+  * **CRITICAL FOR IDEMPOTENCY:** If `workspace/simplesieve/` already exists, remove it with `shutil.rmtree` BEFORE cloning.
+  * Clone the repo: `git clone https://github.com/gilflorida2023/simplesieve workspace/simplesieve`.
+  * Return the `CompletedProcess` result.
+  * **Doctests to embed in docstring:**
+    * Call `clone_repo()`, verify `result.returncode == 0`.
+    * Verify `os.path.isdir("workspace/simplesieve/.git")` is `True`.
+* **Validation Command:** `python3 -m pytest --doctest-modules workspace/tasks.py -v`
 
 ---
 
-## Task 2: Navigate to project directory
-
-**Depends on:** 1
-**Function:** `get_project_dir()` in `tasks.py`
-
-```python
-def get_project_dir():
-    """Return the absolute path to the simplesieve project directory.
-    This should be os.path.abspath('workspace/simplesieve').
-    """
-    return os.path.abspath("workspace/simplesieve")
-```
-
-**Test:** `test_get_project_dir()` in `tasks.py`
-
-```python
-def test_get_project_dir():
-    import os
-    clone_repo()  # Prerequisite: make sure the upstream repo is cloned first
-    path = get_project_dir()
-    assert os.path.isdir(path), f"Path does not exist: {path}"
-    assert path.endswith("simplesieve"), f"Path does not end with simplesieve: {path}"
-```
-
-**Validation:** Run `python3 -m pytest workspace/tasks.py -k test_get_project_dir -v`
-**Done:** False
+### Task 2: Navigate and Locate Project Directory
+* **Status:** [TODO]
+* **Depends On:** Task 1
+* **Description:** Implement a function `get_project_dir()` that returns the absolute path to the cloned `simplesieve` workspace directory.
+* **Requirements:**
+  * Must return an absolute string path.
+  * Must verify that the directory actually exists on the filesystem before returning.
+* **Implementation:**
+  * Signature: `def get_project_dir()` — no arguments, returns a `str` (absolute path).
+  * Import `os`.
+  * Compute `os.path.abspath("workspace/simplesieve")`.
+  * Raise `FileNotFoundError` if the path does not exist.
+  * Return the absolute path.
+  * **Doctests to embed in docstring:**
+    * Call `get_project_dir()` and verify `os.path.isabs(d)` is `True`.
+    * Verify `os.path.isdir(d)` is `True`.
+    * Verify `os.path.basename(d) == "simplesieve"` is `True`.
+* **Validation Command:** `python3 -m pytest --doctest-modules workspace/tasks.py -v`
 
 ---
 
-## Task 3: Build the program
-
-**Depends on:** 1, 2
-**Function:** `build_program()` in `tasks.py`
-
-```python
-def build_program():
-    """Build simplesieve using 'go build -o simplesieve' inside the project directory.
-    Use subprocess.run, set cwd to get_project_dir().
-    Return the subprocess result.
-    """
-    return run(["go", "build", "-o", "simplesieve"], cwd=get_project_dir())
-```
-
-**Test:** `test_build_program()` in `tasks.py`
-
-```python
-def test_build_program():
-    import os
-    from subprocess import run
-    clone_repo()  # Prerequisite: make sure the upstream repo is cloned first
-    result = build_program()
-    assert result.returncode == 0, f"go build failed: {result.stderr}"
-    exe = os.path.join(get_project_dir(), "simplesieve")
-    assert os.path.isfile(exe), f"Executable not found: {exe}"
-    assert os.access(exe, os.X_OK), f"File is not executable: {exe}"
-```
-
-**Validation:** Run `python3 -m pytest workspace/tasks.py -k test_build_program -v`
-**Done:** False
+### Task 3: Compile the Go Program
+* **Status:** [TODO]
+* **Depends On:** Task 1, Task 2
+* **Description:** Implement a function `build_program()` that compiles the `simplesieve` source code using the **Go compiler**.
+* **Requirements:**
+  * Must execute `go build -o simplesieve` targeting the path provided by `get_project_dir()`.
+  * Must explicitly set the subprocess execution context working directory (`cwd`) to the project directory.
+  * The project is written in **Go** (not C/C++), so use `go build`, NOT `make`.
+* **Implementation:**
+  * Signature: `def build_program()` — no arguments, returns `int` (exit code).
+  * Import `subprocess`.
+  * Call `get_project_dir()` to get the working directory.
+  * Run `["go", "build", "-o", "simplesieve"]` with `cwd=dir_path`.
+  * Return `result.returncode`.
+  * **Doctests to embed in docstring:**
+    * Call `build_program()` and verify `exit_code == 0`.
+    * Verify `"simplesieve"` exists and is executable.
+* **Validation Command:** `python3 -m pytest --doctest-modules workspace/tasks.py -v`
 
 ---
 
-## Task 4: Count primes in first 1,000,000 natural numbers
-
-**Depends on:** 1, 2, 3
-**Function:** `count_primes()` in `tasks.py`
-
-```python
-def count_primes():
-    """Run simplesieve -c --limit 1e6, print the result to stdout, and return
-    it as a string.
-    Use subprocess.run, set cwd to get_project_dir().
-    """
-    result = run(["./simplesieve", "-c", "--limit", "1e6"], cwd=get_project_dir(),
-                 capture_output=True, text=True)
-    print(result.stdout, end="")
-    return result.stdout
-```
-
-**Test:** `test_count_primes()` in `tasks.py`
-
-```python
-def test_count_primes():
-    output = count_primes()
-    assert "78498" in output, f"Expected '78498' in output, got: {output}"
-```
-
-**Validation:** Run `python3 -m pytest workspace/tasks.py -k test_count_primes -v`
-**Done:** False
+### Task 4: Execute Sieve & Extract Prime Count
+* **Status:** [TODO]
+* **Depends On:** Task 1, Task 2, Task 3
+* **Description:** Implement a function `count_primes()` that runs the compiled **Go binary** to calculate primes within a specific range.
+* **Requirements:**
+  * Must execute `./simplesieve -c --limit 1e6` inside the project directory.
+  * Must capture and return the `stdout` output as a string.
+* **Implementation:**
+  * Signature: `def count_primes()` — no arguments, returns `str`.
+  * Import `subprocess`.
+  * Call `get_project_dir()` to get the working directory.
+  * Run `["./simplesieve", "-c", "--limit", "1e6"]` with `cwd=dir_path`, `capture_output=True`, `text=True`.
+  * Return `result.stdout`.
+  * **Doctests to embed in docstring:**
+    * Call `count_primes()` and verify `isinstance(output, str)` is `True`.
+    * Verify `"78498" in output` is `True`.
+* **Validation Command:** `python3 -m pytest --doctest-modules workspace/tasks.py -v`
 
 ---
 
-## Entry point
-
-Every `tasks.py` must end with a `main()` dispatcher and an
-`if __name__ == "__main__"` block. `main()` auto-discovers any `test_*` function
-by name, so you NEVER edit the dispatch chain — just add `def test_*(...)` above
-it and call `main()` via `python3 workspace/tasks.py <test_name>`.
+## 3. Entry Point
+After the last task function is added, `workspace/tasks.py` must define main() that calls all functions:
 
 ```python
 def main():
-    import sys
-    name = sys.argv[1] if len(sys.argv) > 1 else ""
-    for fn, func in globals().items():
-        if fn.startswith("test_") and fn == name:
-            func()
-            return
-    print(f"Unknown test: {name}")
-    sys.exit(1)
-
+    clone_repo()
+    get_project_dir()
+    build_program()
+    count_primes()
 
 if __name__ == "__main__":
     main()

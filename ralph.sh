@@ -37,7 +37,7 @@ done
 MAX_ITERATIONS=50
 VERBOSE=false
 CLEAN=false
-MODEL_NAME='qwen2.5:7b'
+MODEL_NAME='qwen2.5-coder:7b'
 # Accepts either order: `ralph.sh 3 -v` or `ralph.sh -v 3`.
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -194,31 +194,24 @@ with open('prompt.md') as f:
 with open('spec.md') as f:
     spec = f.read().strip()
 
-m = re.search(r'## Task ' + str(task['num']) + r':.*?```python\s*\n(.*?)```\s*\n\*\*Test:\*\*.*?```python\s*\n(.*?)```', spec, re.DOTALL)
+# Match new spec format: ### Task N: ... ```python (Implementation) ```
+m = re.search(r'### Task ' + str(task['num']) + r':.*?```python\s*\n(.*?)```', spec, re.DOTALL)
 func_code = m.group(1).strip() if m else ''
-test_code = m.group(2).strip() if m else ''
 
 prompt = f'''{system}
 
 Implement this task: Task {task['num']}: {task['title']}
 
-Implement the function '{task['func']}' (AND its test '{task['test']}') in workspace/tasks.py:
+Implement the function '{task['func']}' with embedded doctests in workspace/tasks.py:
 - Read workspace/tasks.py first - existing functions are already there.
-- Add ONLY the new function and its test.
+- Add ONLY the new function with its doctests in the docstring.
 - Re-write the ENTIRE file preserving all existing code (do NOT drop done functions).
-- Keep main() at the bottom exactly as in spec.md.
+- Update main() at the bottom to call the new function.
 '''
 if func_code:
-    prompt += f'''Use this exact reference implementation:
+    prompt += f'''Use this exact reference implementation (includes doctests in docstring):
 ```python
 {func_code}
-```
-
-'''
-if test_code:
-    prompt += f'''Use this exact reference test (calls any prerequisites already present in tasks.py):
-```python
-{test_code}
 ```
 
 '''
@@ -238,8 +231,8 @@ if deps:
 
 prompt += f'''Now implement this task. Steps:
 1. read_file workspace/tasks.py (see what is already there)
-2. write_file workspace/tasks.py (add {task['func']} + {task['test']}, keep main())
-3. run_command with cmd="python3 -m pytest workspace/tasks.py -k {task['test']} -v" to validate
+2. write_file workspace/tasks.py (add {task['func']} with doctests, update main())
+3. run_command with cmd="python3 -m pytest --doctest-modules workspace/tasks.py -v" to validate
 4. If the test fails, fix with write_file and re-run this command.
 '''
 with open('/tmp/ralph_prompt.txt', 'w') as f:
@@ -362,7 +355,7 @@ PY
         # --- 4. validate via pytest ---
         echo "=== Running validation (pytest) ===" | tee -a "$LOGFILE"
         # Do NOT let `set -e` abort the script on a failing test; capture rc.
-        PYTEST_OUTPUT=$(python3 -m pytest workspace/tasks.py -k "$TASK_TEST" -v --tb=short 2>&1) || PYTEST_RC=$?
+        PYTEST_OUTPUT=$(python3 -m pytest --doctest-modules workspace/tasks.py -v --tb=short 2>&1) || PYTEST_RC=$?
         PYTEST_RC=${PYTEST_RC:-0}
         echo "$PYTEST_OUTPUT" | tee -a "$LOGFILE"
 
@@ -377,17 +370,16 @@ PY
             if [ "$ATT" -lt "$MAX_ATTEMPTS" ]; then
                 echo "=== Test failed (attempt $ATT/$MAX_ATTEMPTS), adding feedback ===" | tee -a "$LOGFILE"
                 TASKS_PY_CONTENT="$(cat workspace/tasks.py 2>/dev/null || echo '')"
-                python3 - "$TASK_FUNC" "$TASK_TEST" "$TASKS_PY_CONTENT" "$PYTEST_OUTPUT" <<'PY'
+                python3 - "$TASK_FUNC" "$TASKS_PY_CONTENT" "$PYTEST_OUTPUT" <<'PY'
 import sys
 task_func = sys.argv[1]
-task_test = sys.argv[2]
-tasks_py = sys.argv[3]
-verify_out = sys.argv[4]
+tasks_py = sys.argv[2]
+verify_out = sys.argv[3]
 with open('/tmp/ralph_prompt.txt', 'a') as f:
     f.write("\n\nPREVIOUS ATTEMPT FAILED.\n")
     f.write(f"\n=== workspace/tasks.py ===\n{tasks_py}\n")
-    f.write(f"\n=== test output (python3 -m pytest workspace/tasks.py -k {task_test} -v) ===\n{verify_out}\n")
-    f.write(f"\nFix the code and re-run: python3 -m pytest workspace/tasks.py -k {task_test} -v\n")
+    f.write(f"\n=== test output (python3 -m pytest --doctest-modules workspace/tasks.py -v) ===\n{verify_out}\n")
+    f.write(f"\nFix the code and re-run: python3 -m pytest --doctest-modules workspace/tasks.py -v\n")
 PY
             else
                 echo "=== Task failed after $MAX_ATTEMPTS attempts, marking BLOCKER ===" | tee -a "$LOGFILE"

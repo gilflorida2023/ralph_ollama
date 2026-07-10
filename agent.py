@@ -19,29 +19,45 @@ def parse_spec():
     sections = content.split("---")
     tasks = []
     for section in sections:
-        m = re.search(r"## Task (\d+):\s*(.+)", section)
+        m = re.search(r"### Task (\d+):\s*(.+)", section)
         if not m:
             continue
         num = int(m.group(1))
         title = m.group(2).strip()
-        func_m = re.search(r"\*\*Function:\*\*\s*`(\w+)\(\)`", section)
-        test_m = re.search(r"\*\*Test:\*\*\s*`(\w+)\(\)`", section)
-        val_m = re.search(r"\*\*Validation:\*\*\s*(.+)", section)
-        func_name = func_m.group(1) if func_m else ""
-        test_name = test_m.group(1) if test_m else ""
+        
+        func_name = ""
+        func_code = ""
+        # Try to find function name from code block (old format)
+        all_blocks = re.findall(r"```python\s*\n(.*?)```", section, re.DOTALL)
+        if len(all_blocks) >= 1:
+            func_code = all_blocks[0].strip()
+            func_match = re.search(r'def (\w+)\(', func_code)
+            func_name = func_match.group(1) if func_match else ""
+        
+        # If no code block, try to extract from English "Signature: def func_name()" pattern
+        if not func_name:
+            sig_match = re.search(r'Signature:\s*def\s+(\w+)\s*\(', section)
+            if sig_match:
+                func_name = sig_match.group(1)
+            else:
+                # Fallback: try to infer from title/description
+                func_match = re.search(r'function\s+`?(\w+)`?', section, re.IGNORECASE)
+                if not func_match:
+                    func_match = re.search(r'def (\w+)', section)
+                if func_match:
+                    func_name = func_match.group(1)
+        
+        test_name = func_name
+        
+        val_m = re.search(r"\*\*Validation Command:\*\*\s*(.+?)(?=\s*---|\s*$)", section, re.DOTALL)
         validation = val_m.group(1).strip() if val_m else ""
-        deps_m = re.search(r"\*\*Depends on:\*\*\s*(.+)", section)
+        
+        deps_m = re.search(r"\*\*Depends On:\*\*\s*(.+?)(?=\s*\*|\s*---|\s*$)", section, re.DOTALL)
         deps = []
         if deps_m:
-            deps = [int(x.strip()) for x in deps_m.group(1).split(",") if x.strip()]
-        func_code = ""
-        tc = re.search(r"```python\s*\n(.*?)```", section, re.DOTALL)
-        if tc:
-            func_code = tc.group(1).strip()
-        test_code = ""
-        all_blocks = re.findall(r"```python\s*\n(.*?)```", section, re.DOTALL)
-        if len(all_blocks) > 1:
-            test_code = all_blocks[1].strip()
+            dep_str = deps_m.group(1)
+            deps = [int(x.strip()) for x in re.findall(r'(\d+)', dep_str) if x.strip()]
+        
         tasks.append({
             "num": num,
             "title": title,
@@ -50,7 +66,7 @@ def parse_spec():
             "validation": validation,
             "depends_on": deps,
             "func_code": func_code,
-            "test_code": test_code,
+            "test_code": "",
         })
     tasks.sort(key=lambda t: t["num"])
     return tasks
@@ -152,8 +168,6 @@ def execute_read_file(args):
 def execute_write_file(args):
     path = args.get("path", "")
     content = args.get("content", "")
-    if "\\n" in content:
-        content = content.replace("\\n", "\n").replace("\\t", "\t").replace('\\"', '"')
     full = os.path.join(PROJECT_ROOT, path)
     os.makedirs(os.path.dirname(full), exist_ok=True)
     with open(full, "w") as f:
